@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rollouts.models import AppPaths, WorkspaceRecord
+from rollouts.models import AppPaths, SnapshotRecord, WorkspaceRecord
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -13,6 +13,20 @@ CREATE TABLE IF NOT EXISTS workspaces (
   store_path TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS snapshots (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  store_commit_sha TEXT NOT NULL,
+  metadata TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+);
+
+CREATE INDEX IF NOT EXISTS snapshots_lookup_idx
+  ON snapshots (workspace_id, session_id, turn_id, captured_at);
 """
 
 
@@ -68,6 +82,53 @@ def create_workspace(
         root_path=root_path,
         store_path=store_path,
         created_at=created_at,
+    )
+
+
+def create_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    snapshot_id: str,
+    workspace_id: str,
+    session_id: str,
+    turn_id: str,
+    store_commit_sha: str,
+    metadata: str,
+) -> SnapshotRecord:
+    captured_at = datetime.now(timezone.utc)
+    connection.execute(
+        """
+        INSERT INTO snapshots (
+          id,
+          workspace_id,
+          session_id,
+          turn_id,
+          store_commit_sha,
+          metadata,
+          captured_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            snapshot_id,
+            workspace_id,
+            session_id,
+            turn_id,
+            store_commit_sha,
+            metadata,
+            captured_at.isoformat(),
+        ),
+    )
+    connection.commit()
+
+    return SnapshotRecord(
+        id=snapshot_id,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        turn_id=turn_id,
+        store_commit_sha=store_commit_sha,
+        metadata=metadata,
+        captured_at=captured_at,
     )
 
 

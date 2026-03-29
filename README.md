@@ -8,11 +8,11 @@ Current prototype:
 - `uv`-managed Python CLI
 - global installable `rollouts` command
 - `rollouts init <workspace>`
+- `rollouts snapshot [workspace] --session --turn --metadata`
 - SQLite bootstrap with a `workspaces` table
 - one bare Git store per registered workspace
 
 Not built yet:
-- `rollouts capture`
 - `rollouts list`
 - `rollouts restore`
 
@@ -58,6 +58,26 @@ The `init` command:
 - creates a bare store for the workspace
 - inserts a row into `workspaces`
 
+Create a snapshot for a session turn:
+
+```bash
+rollouts snapshot . \
+  --session ses_123 \
+  --turn turn_001 \
+  --metadata '{"timestamp":"2026-03-29T20:02:43.622Z","kind":"hooks","name":"chat.message"}'
+```
+
+The `snapshot` command:
+- defaults the workspace path to `.`
+- requires `--session`
+- requires `--turn`
+- requires `--metadata`
+- expects `--metadata` to be an inline JSON string
+- automatically initializes the workspace if it has not been registered yet
+- snapshots the current Git-visible workspace state
+- stores the resulting Git commit in the workspace bare store
+- inserts a row into `snapshots`
+
 The current on-disk layout is:
 
 ```text
@@ -84,6 +104,17 @@ CREATE TABLE workspaces (
   root_path TEXT NOT NULL UNIQUE,
   store_path TEXT NOT NULL,
   created_at TEXT NOT NULL
+);
+
+CREATE TABLE snapshots (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  store_commit_sha TEXT NOT NULL,
+  metadata TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
 );
 ```
 

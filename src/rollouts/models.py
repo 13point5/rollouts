@@ -28,3 +28,15 @@ class WorkspaceInitResult(BaseModel):
 
     workspace: WorkspaceRecord
     created: bool
+
+
+class SnapshotRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    workspace_id: str
+    session_id: str
+    turn_id: str
+    store_commit_sha: str
+    metadata: str
+    captured_at: datetime

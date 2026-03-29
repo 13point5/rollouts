@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
-from rollouts.db import connect, create_workspace, get_workspace_by_root_path, initialize_db
 from rollouts.errors import RolloutsError
-from rollouts.git_store import initialize_bare_store, resolve_git_workspace_root
-from rollouts.models import WorkspaceInitResult
-from rollouts.paths import ensure_app_home, get_app_paths, workspace_store_path
+from rollouts.snapshot import snapshot_workspace
+from rollouts.workspace import ensure_workspace
 
 app = typer.Typer(no_args_is_help=True, help="Capture and restore agent rollout workspace states.")
 console = Console(stderr=True)
@@ -36,7 +33,7 @@ def init(
     """Register a workspace and create its bare Git store."""
 
     try:
-        result = initialize_workspace(workspace)
+        result = ensure_workspace(workspace)
     except RolloutsError as error:
         console.print(f"[red]Error:[/red] {error}")
         raise typer.Exit(code=1) from error
@@ -53,30 +50,41 @@ def init(
     output.print(f"store: {record.store_path}")
 
 
-def initialize_workspace(workspace: Path) -> WorkspaceInitResult:
-    from uuid import uuid4
+@app.command()
+def snapshot(
+    workspace: Path = typer.Argument(
+        Path("."),
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path anywhere inside the Git workspace you want to snapshot.",
+    ),
+    session_id: str = typer.Option(..., "--session", help="External chat session identifier."),
+    turn_id: str = typer.Option(..., "--turn", help="External turn identifier."),
+    metadata: str = typer.Option(
+        ...,
+        "--metadata",
+        help="Inline metadata JSON string.",
+    ),
+) -> None:
+    """Store a workspace snapshot for a session turn."""
 
-    paths = get_app_paths()
-    ensure_app_home(paths)
-    workspace_root = resolve_git_workspace_root(workspace)
+    try:
+        record = snapshot_workspace(
+            workspace=workspace,
+            session_id=session_id,
+            turn_id=turn_id,
+            metadata=metadata,
+        )
+    except RolloutsError as error:
+        console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
 
-    with connect(paths) as connection:
-        initialize_db(connection)
-        existing = get_workspace_by_root_path(connection, workspace_root)
-        if existing is not None:
-            return WorkspaceInitResult(workspace=existing, created=False)
-
-        workspace_id = uuid4().hex
-        store_path = workspace_store_path(paths, workspace_id=workspace_id)
-        try:
-            initialize_bare_store(store_path)
-            record = create_workspace(
-                connection,
-                workspace_id=workspace_id,
-                root_path=workspace_root,
-                store_path=store_path,
-            )
-            return WorkspaceInitResult(workspace=record, created=True)
-        except Exception:
-            shutil.rmtree(store_path.parent, ignore_errors=True)
-            raise
+    output = Console()
+    output.print(f"[green]Created snapshot[/green] {record.id}")
+    output.print(f"session: {record.session_id}")
+    output.print(f"turn: {record.turn_id}")
+    output.print(f"store commit: {record.store_commit_sha}")
+    output.print(f"captured at: {record.captured_at.isoformat()}")
