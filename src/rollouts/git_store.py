@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import os
 import subprocess
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -73,6 +75,30 @@ def delete_snapshot_ref(*, store_path: Path, snapshot_id: str) -> None:
         raise RolloutsError(message)
 
 
+def restore_snapshot_to_destination(
+    *,
+    store_path: Path,
+    destination: Path,
+    store_commit_sha: str,
+) -> None:
+    if destination.exists():
+        raise RolloutsError(f"destination already exists: {destination}")
+
+    archive = _run_git_bytes(
+        ["--git-dir", str(store_path), "archive", "--format=tar", store_commit_sha]
+    ).stdout
+
+    destination.mkdir(parents=True, exist_ok=False)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            _extract_tar_into_destination(tar, destination)
+    except Exception:
+        import shutil
+
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+
+
 def _clear_worktree(staging_path: Path) -> None:
     for child in staging_path.iterdir():
         if child.name == ".git":
@@ -137,3 +163,13 @@ def _run_git_bytes(args: list[str]) -> subprocess.CompletedProcess[bytes]:
         raise RolloutsError(message)
 
     return completed
+
+
+def _extract_tar_into_destination(tar: tarfile.TarFile, destination: Path) -> None:
+    for member in tar.getmembers():
+        member_path = destination / member.name
+        resolved_member_path = member_path.resolve(strict=False)
+        if destination not in resolved_member_path.parents and resolved_member_path != destination:
+            raise RolloutsError(f"refusing to extract path outside destination: {member.name}")
+
+    tar.extractall(destination)

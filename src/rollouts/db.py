@@ -132,10 +132,55 @@ def create_snapshot(
     )
 
 
+def get_latest_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    session_id: str,
+    turn_id: str,
+) -> SnapshotRecord | None:
+    row = connection.execute(
+        """
+        SELECT
+          id,
+          workspace_id,
+          session_id,
+          turn_id,
+          store_commit_sha,
+          metadata,
+          captured_at
+        FROM snapshots
+        WHERE workspace_id = ?
+          AND session_id = ?
+          AND turn_id = ?
+        ORDER BY captured_at DESC
+        LIMIT 1
+        """,
+        (workspace_id, session_id, turn_id),
+    ).fetchone()
+
+    if row is None:
+        return None
+
+    return _snapshot_from_row(row)
+
+
 def _workspace_from_row(row: sqlite3.Row) -> WorkspaceRecord:
     return WorkspaceRecord(
         id=row["id"],
         root_path=Path(row["root_path"]),
         store_path=Path(row["store_path"]),
         created_at=row["created_at"],
+    )
+
+
+def _snapshot_from_row(row: sqlite3.Row) -> SnapshotRecord:
+    return SnapshotRecord(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        session_id=row["session_id"],
+        turn_id=row["turn_id"],
+        store_commit_sha=row["store_commit_sha"],
+        metadata=row["metadata"],
+        captured_at=row["captured_at"],
     )

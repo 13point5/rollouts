@@ -9,12 +9,12 @@ Current prototype:
 - global installable `rollouts` command
 - `rollouts init <workspace>`
 - `rollouts snapshot [workspace] --session --turn --metadata`
+- `rollouts restore <dest> [workspace] --session --turn`
 - SQLite bootstrap with a `workspaces` table
 - one bare Git store per registered workspace
 
 Not built yet:
 - `rollouts list`
-- `rollouts restore`
 
 ## Install
 
@@ -77,6 +77,24 @@ The `snapshot` command:
 - snapshots the current Git-visible workspace state
 - stores the resulting Git commit in the workspace bare store
 - inserts a row into `snapshots`
+
+Restore the latest snapshot for a session turn:
+
+```bash
+rollouts restore . \
+  --session ses_123 \
+  --turn turn_001 \
+  --dest /tmp/restored
+```
+
+The `restore` command:
+- takes the source workspace path as its argument, defaulting to `.`
+- requires `--session`
+- requires `--turn`
+- requires `--dest`
+- finds the latest matching snapshot by `captured_at`
+- extracts the stored snapshot into the destination as a plain codebase directory
+- fails if the destination already exists
 
 The current on-disk layout is:
 

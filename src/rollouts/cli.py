@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 
 from rollouts.errors import RolloutsError
+from rollouts.restore import restore_workspace
 from rollouts.snapshot import snapshot_workspace
 from rollouts.workspace import ensure_workspace
 
@@ -88,3 +89,44 @@ def snapshot(
     output.print(f"turn: {record.turn_id}")
     output.print(f"store commit: {record.store_commit_sha}")
     output.print(f"captured at: {record.captured_at.isoformat()}")
+
+
+@app.command()
+def restore(
+    workspace: Path = typer.Argument(
+        Path("."),
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path anywhere inside the Git workspace to restore from.",
+    ),
+    session_id: str = typer.Option(..., "--session", help="External chat session identifier."),
+    turn_id: str = typer.Option(..., "--turn", help="External turn identifier."),
+    destination: Path = typer.Option(
+        ...,
+        "--dest",
+        resolve_path=True,
+        help="Destination directory for the restored snapshot.",
+    ),
+) -> None:
+    """Restore the latest snapshot for a session turn into a new directory."""
+
+    try:
+        record = restore_workspace(
+            workspace=workspace,
+            session_id=session_id,
+            turn_id=turn_id,
+            destination=destination,
+        )
+    except RolloutsError as error:
+        console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output = Console()
+    output.print(f"[green]Restored snapshot[/green] {record.id}")
+    output.print(f"session: {record.session_id}")
+    output.print(f"turn: {record.turn_id}")
+    output.print(f"store commit: {record.store_commit_sha}")
+    output.print(f"destination: {destination}")
