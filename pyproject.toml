@@ -1,0 +1,42 @@
+[project]
+name = "rollouts"
+dynamic = ["version"]
+description = "CLI for capturing and restoring agent rollout workspace states"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = { text = "MIT" }
+authors = [
+  { name = "13point5" }
+]
+dependencies = [
+  "pydantic>=2.11.0",
+  "rich>=14.0.0",
+  "typer>=0.16.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pre-commit>=3.5.0",
+  "ruff>=0.12.0",
+  "ty>=0.0.1a0",
+]
+
+[project.scripts]
+rollouts = "rollouts.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/rollouts/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rollouts"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
