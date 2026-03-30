@@ -1,18 +1,33 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
+from typing import Sequence
 
 from rollouts.errors import RolloutsError
+from rollouts.models import ResolvedWorkspace
 
 
-def resolve_git_workspace_root(workspace: Path) -> Path:
-    completed = _run_git(["-C", str(workspace), "rev-parse", "--show-toplevel"])
-    return Path(completed.stdout.strip()).resolve()
+def resolve_workspace_source(workspace: Path) -> ResolvedWorkspace:
+    workspace_path = workspace.resolve(strict=False)
+    git_root = _try_resolve_git_workspace_root(workspace_path)
+    if git_root is not None:
+        return ResolvedWorkspace(
+            root_path=git_root,
+            is_git=True,
+            vcs=_build_git_vcs_metadata(workspace_path=workspace_path, git_root=git_root),
+        )
+
+    return ResolvedWorkspace(
+        root_path=workspace_path,
+        is_git=False,
+        vcs=json.dumps({"vcs": None}),
+    )
 
 
 def initialize_bare_store(store_path: Path) -> None:
@@ -23,10 +38,12 @@ def initialize_bare_store(store_path: Path) -> None:
 def create_snapshot_commit(
     *,
     workspace_root: Path,
+    is_git: bool,
     store_path: Path,
     snapshot_id: str,
     session_id: str,
-    turn_id: str,
+    message_id: str,
+    excluded_paths: Sequence[Path] = (),
 ) -> str:
     with tempfile.TemporaryDirectory(prefix="rollouts-snapshot-") as tmp_dir:
         staging_path = Path(tmp_dir) / "staging"
@@ -35,7 +52,12 @@ def create_snapshot_commit(
         _run_git(["-C", str(staging_path), "config", "user.email", "rollouts@local"])
 
         _clear_worktree(staging_path)
-        _copy_visible_workspace_files(workspace_root, staging_path)
+        _copy_workspace_files(
+            workspace_root=workspace_root,
+            is_git=is_git,
+            staging_path=staging_path,
+            excluded_paths=excluded_paths,
+        )
 
         _run_git(["-C", str(staging_path), "add", "-A"])
         _run_git(
@@ -45,7 +67,7 @@ def create_snapshot_commit(
                 "commit",
                 "--allow-empty",
                 "-m",
-                f"snapshot {session_id} turn {turn_id}",
+                f"snapshot {session_id} message {message_id}",
             ]
         )
 
@@ -111,7 +133,34 @@ def _clear_worktree(staging_path: Path) -> None:
             child.unlink()
 
 
-def _copy_visible_workspace_files(workspace_root: Path, staging_path: Path) -> None:
+def _copy_workspace_files(
+    *,
+    workspace_root: Path,
+    is_git: bool,
+    staging_path: Path,
+    excluded_paths: Sequence[Path],
+) -> None:
+    if is_git:
+        _copy_git_workspace_files(
+            workspace_root=workspace_root,
+            staging_path=staging_path,
+            excluded_paths=excluded_paths,
+        )
+        return
+
+    _copy_directory_workspace_files(
+        source_root=workspace_root,
+        destination_root=staging_path,
+        excluded_paths=excluded_paths,
+    )
+
+
+def _copy_git_workspace_files(
+    *,
+    workspace_root: Path,
+    staging_path: Path,
+    excluded_paths: Sequence[Path],
+) -> None:
     import shutil
 
     completed = _run_git_bytes(
@@ -121,6 +170,8 @@ def _copy_visible_workspace_files(workspace_root: Path, staging_path: Path) -> N
 
     for relative_path in relative_paths:
         source_path = workspace_root / relative_path
+        if _should_skip_path(source_path, excluded_paths) or source_path.name == ".git":
+            continue
         destination_path = staging_path / relative_path
         destination_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -133,13 +184,53 @@ def _copy_visible_workspace_files(workspace_root: Path, staging_path: Path) -> N
             raise RolloutsError(f"unsupported tracked path type: {source_path}")
 
 
-def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        ["git", *args],
-        check=False,
-        capture_output=True,
-        text=True,
+def _copy_directory_workspace_files(
+    *,
+    source_root: Path,
+    destination_root: Path,
+    excluded_paths: Sequence[Path],
+) -> None:
+    import shutil
+
+    for source_path in sorted(source_root.iterdir(), key=lambda path: path.name):
+        if source_path.name == ".git" or _should_skip_path(source_path, excluded_paths):
+            continue
+
+        destination_path = destination_root / source_path.name
+        if source_path.is_symlink():
+            target = os.readlink(source_path)
+            destination_path.symlink_to(target)
+        elif source_path.is_file():
+            shutil.copy2(source_path, destination_path)
+        elif source_path.is_dir():
+            destination_path.mkdir(parents=True, exist_ok=True)
+            _copy_directory_workspace_files(
+                source_root=source_path,
+                destination_root=destination_path,
+                excluded_paths=excluded_paths,
+            )
+        else:
+            raise RolloutsError(f"unsupported workspace path type: {source_path}")
+
+
+def _should_skip_path(path: Path, excluded_paths: Sequence[Path]) -> bool:
+    resolved_path = path.resolve(strict=False)
+    return any(
+        resolved_path == excluded_path or excluded_path in resolved_path.parents
+        for excluded_path in excluded_paths
     )
+
+
+def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise RolloutsError("git executable not found") from error
 
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "git command failed"
@@ -149,12 +240,15 @@ def _run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _run_git_bytes(args: list[str]) -> subprocess.CompletedProcess[bytes]:
-    completed = subprocess.run(
-        ["git", *args],
-        check=False,
-        capture_output=True,
-        text=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            check=False,
+            capture_output=True,
+            text=False,
+        )
+    except FileNotFoundError as error:
+        raise RolloutsError("git executable not found") from error
 
     if completed.returncode != 0:
         stderr = completed.stderr.decode("utf-8", errors="replace").strip()
@@ -173,3 +267,53 @@ def _extract_tar_into_destination(tar: tarfile.TarFile, destination: Path) -> No
             raise RolloutsError(f"refusing to extract path outside destination: {member.name}")
 
     tar.extractall(destination)
+
+
+def _try_resolve_git_workspace_root(workspace: Path) -> Path | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(workspace), "rev-parse", "--show-toplevel"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise RolloutsError("git executable not found") from error
+
+    if completed.returncode != 0:
+        return None
+
+    return Path(completed.stdout.strip()).resolve()
+
+
+def _build_git_vcs_metadata(*, workspace_path: Path, git_root: Path) -> str:
+    branch = _run_git_optional_text(
+        ["-C", str(workspace_path), "symbolic-ref", "--quiet", "--short", "HEAD"]
+    )
+    head_commit = _run_git_optional_text(["-C", str(workspace_path), "rev-parse", "HEAD"])
+
+    return json.dumps(
+        {
+            "vcs": "git",
+            "worktree_path": str(git_root),
+            "branch": branch,
+            "head_commit": head_commit,
+        }
+    )
+
+
+def _run_git_optional_text(args: list[str]) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        raise RolloutsError("git executable not found") from error
+
+    if completed.returncode != 0:
+        return None
+
+    return completed.stdout.strip() or None

@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from rollouts.errors import RolloutsError
 from rollouts.models import AppPaths, SnapshotRecord, WorkspaceRecord
 
 SCHEMA = """
@@ -18,15 +19,14 @@ CREATE TABLE IF NOT EXISTS snapshots (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
   session_id TEXT NOT NULL,
-  turn_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
   store_commit_sha TEXT NOT NULL,
+  vcs TEXT NOT NULL,
   metadata TEXT NOT NULL,
   captured_at TEXT NOT NULL,
+  UNIQUE (workspace_id, session_id, message_id),
   FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
 );
-
-CREATE INDEX IF NOT EXISTS snapshots_lookup_idx
-  ON snapshots (workspace_id, session_id, turn_id, captured_at);
 """
 
 
@@ -60,6 +60,42 @@ def get_workspace_by_root_path(
     return _workspace_from_row(row)
 
 
+def get_workspace_for_path(
+    connection: sqlite3.Connection, workspace_path: Path
+) -> WorkspaceRecord | None:
+    resolved_path = workspace_path.resolve(strict=False)
+    rows = connection.execute(
+        """
+        SELECT id, root_path, store_path, created_at
+        FROM workspaces
+        """
+    ).fetchall()
+
+    matches = [
+        record
+        for row in rows
+        if resolved_path == (record := _workspace_from_row(row)).root_path
+        or record.root_path in resolved_path.parents
+    ]
+    if not matches:
+        return None
+
+    return max(matches, key=lambda record: len(record.root_path.parts))
+
+
+def find_workspace(
+    connection: sqlite3.Connection,
+    *,
+    workspace_path: Path,
+    resolved_root_path: Path,
+) -> WorkspaceRecord | None:
+    exact_workspace = get_workspace_by_root_path(connection, resolved_root_path)
+    if exact_workspace is not None:
+        return exact_workspace
+
+    return get_workspace_for_path(connection, workspace_path)
+
+
 def create_workspace(
     connection: sqlite3.Connection,
     *,
@@ -85,59 +121,98 @@ def create_workspace(
     )
 
 
+def update_workspace_root_path(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    root_path: Path,
+) -> WorkspaceRecord:
+    connection.execute(
+        """
+        UPDATE workspaces
+        SET root_path = ?
+        WHERE id = ?
+        """,
+        (str(root_path), workspace_id),
+    )
+    connection.commit()
+
+    row = connection.execute(
+        """
+        SELECT id, root_path, store_path, created_at
+        FROM workspaces
+        WHERE id = ?
+        """,
+        (workspace_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"workspace disappeared during root update: {workspace_id}")
+
+    return _workspace_from_row(row)
+
+
 def create_snapshot(
     connection: sqlite3.Connection,
     *,
     snapshot_id: str,
     workspace_id: str,
     session_id: str,
-    turn_id: str,
+    message_id: str,
     store_commit_sha: str,
+    vcs: str,
     metadata: str,
 ) -> SnapshotRecord:
     captured_at = datetime.now(timezone.utc)
-    connection.execute(
-        """
-        INSERT INTO snapshots (
-          id,
-          workspace_id,
-          session_id,
-          turn_id,
-          store_commit_sha,
-          metadata,
-          captured_at
+    try:
+        connection.execute(
+            """
+            INSERT INTO snapshots (
+              id,
+              workspace_id,
+              session_id,
+              message_id,
+              store_commit_sha,
+              vcs,
+              metadata,
+              captured_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot_id,
+                workspace_id,
+                session_id,
+                message_id,
+                store_commit_sha,
+                vcs,
+                metadata,
+                captured_at.isoformat(),
+            ),
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            snapshot_id,
-            workspace_id,
-            session_id,
-            turn_id,
-            store_commit_sha,
-            metadata,
-            captured_at.isoformat(),
-        ),
-    )
+    except sqlite3.IntegrityError as error:
+        raise RolloutsError(
+            f"snapshot already exists for session {session_id!r} and message {message_id!r}"
+        ) from error
     connection.commit()
 
     return SnapshotRecord(
         id=snapshot_id,
         workspace_id=workspace_id,
         session_id=session_id,
-        turn_id=turn_id,
+        message_id=message_id,
         store_commit_sha=store_commit_sha,
+        vcs=vcs,
         metadata=metadata,
         captured_at=captured_at,
     )
 
 
-def get_latest_snapshot(
+def get_snapshot_by_message(
     connection: sqlite3.Connection,
     *,
     workspace_id: str,
     session_id: str,
-    turn_id: str,
+    message_id: str,
 ) -> SnapshotRecord | None:
     row = connection.execute(
         """
@@ -145,18 +220,17 @@ def get_latest_snapshot(
           id,
           workspace_id,
           session_id,
-          turn_id,
+          message_id,
           store_commit_sha,
+          vcs,
           metadata,
           captured_at
         FROM snapshots
         WHERE workspace_id = ?
           AND session_id = ?
-          AND turn_id = ?
-        ORDER BY captured_at DESC
-        LIMIT 1
+          AND message_id = ?
         """,
-        (workspace_id, session_id, turn_id),
+        (workspace_id, session_id, message_id),
     ).fetchone()
 
     if row is None:
@@ -179,8 +253,9 @@ def _snapshot_from_row(row: sqlite3.Row) -> SnapshotRecord:
         id=row["id"],
         workspace_id=row["workspace_id"],
         session_id=row["session_id"],
-        turn_id=row["turn_id"],
+        message_id=row["message_id"],
         store_commit_sha=row["store_commit_sha"],
+        vcs=row["vcs"],
         metadata=row["metadata"],
         captured_at=row["captured_at"],
     )

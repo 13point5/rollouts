@@ -28,10 +28,10 @@ def init(
         dir_okay=True,
         readable=True,
         resolve_path=True,
-        help="Path anywhere inside the Git workspace you want to track.",
+        help="Path anywhere inside the directory you want to track.",
     ),
 ) -> None:
-    """Register a workspace and create its bare Git store."""
+    """Register a workspace and create its internal snapshot store."""
 
     try:
         result = ensure_workspace(workspace)
@@ -60,23 +60,23 @@ def snapshot(
         dir_okay=True,
         readable=True,
         resolve_path=True,
-        help="Path anywhere inside the Git workspace you want to snapshot.",
+        help="Path anywhere inside the directory you want to snapshot.",
     ),
     session_id: str = typer.Option(..., "--session", help="External chat session identifier."),
-    turn_id: str = typer.Option(..., "--turn", help="External turn identifier."),
+    message_id: str = typer.Option(..., "--message", help="External message identifier."),
     metadata: str = typer.Option(
         ...,
         "--metadata",
         help="Inline metadata JSON string.",
     ),
 ) -> None:
-    """Store a workspace snapshot for a session turn."""
+    """Store a workspace snapshot for a session message."""
 
     try:
         record = snapshot_workspace(
             workspace=workspace,
             session_id=session_id,
-            turn_id=turn_id,
+            message_id=message_id,
             metadata=metadata,
         )
     except RolloutsError as error:
@@ -86,7 +86,7 @@ def snapshot(
     output = Console()
     output.print(f"[green]Created snapshot[/green] {record.id}")
     output.print(f"session: {record.session_id}")
-    output.print(f"turn: {record.turn_id}")
+    output.print(f"message: {record.message_id}")
     output.print(f"store commit: {record.store_commit_sha}")
     output.print(f"captured at: {record.captured_at.isoformat()}")
 
@@ -100,10 +100,10 @@ def restore(
         dir_okay=True,
         readable=True,
         resolve_path=True,
-        help="Path anywhere inside the Git workspace to restore from.",
+        help="Path anywhere inside the source directory to restore from.",
     ),
     session_id: str = typer.Option(..., "--session", help="External chat session identifier."),
-    turn_id: str = typer.Option(..., "--turn", help="External turn identifier."),
+    message_id: str = typer.Option(..., "--message", help="External message identifier."),
     destination: Path = typer.Option(
         ...,
         "--dest",
@@ -111,13 +111,13 @@ def restore(
         help="Destination directory for the restored snapshot.",
     ),
 ) -> None:
-    """Restore the latest snapshot for a session turn into a new directory."""
+    """Restore the snapshot for a session message into a new directory."""
 
     try:
         record = restore_workspace(
             workspace=workspace,
             session_id=session_id,
-            turn_id=turn_id,
+            message_id=message_id,
             destination=destination,
         )
     except RolloutsError as error:
@@ -127,6 +127,6 @@ def restore(
     output = Console()
     output.print(f"[green]Restored snapshot[/green] {record.id}")
     output.print(f"session: {record.session_id}")
-    output.print(f"turn: {record.turn_id}")
+    output.print(f"message: {record.message_id}")
     output.print(f"store commit: {record.store_commit_sha}")
     output.print(f"destination: {destination}")

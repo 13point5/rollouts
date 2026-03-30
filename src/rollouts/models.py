@@ -30,13 +30,22 @@ class WorkspaceInitResult(BaseModel):
     created: bool
 
 
+class ResolvedWorkspace(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    root_path: Path
+    is_git: bool
+    vcs: str
+
+
 class SnapshotRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: str
     workspace_id: str
     session_id: str
-    turn_id: str
+    message_id: str
     store_commit_sha: str
+    vcs: str
     metadata: str
     captured_at: datetime
