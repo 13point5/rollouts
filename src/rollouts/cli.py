@@ -18,7 +18,7 @@ from rollouts.commands.remote import (
     set_global_remote_defaults,
     set_workspace_remote,
 )
-from rollouts.commands.restore import restore_workspace
+from rollouts.commands.restore import restore_remote_workspace, restore_workspace
 from rollouts.commands.snapshot import snapshot_workspace
 from rollouts.errors import RolloutsError
 from rollouts.github import get_github_repo_web_url
@@ -191,7 +191,12 @@ def restore(
         dir_okay=True,
         readable=True,
         resolve_path=True,
-        help="Path anywhere inside the source directory to restore from.",
+        help="Path anywhere inside the source directory to restore from. Ignored with --repo.",
+    ),
+    repo_url: str | None = typer.Option(
+        None,
+        "--repo",
+        help="Remote archive repo URL or GitHub repo page URL.",
     ),
     session_id: str = typer.Option(..., "--session", help="External chat session identifier."),
     message_id: str = typer.Option(..., "--message", help="External message identifier."),
@@ -205,6 +210,22 @@ def restore(
     """Restore the snapshot for a session message into a new directory."""
 
     try:
+        if repo_url is not None:
+            result = restore_remote_workspace(
+                repo_url=repo_url,
+                session_id=session_id,
+                message_id=message_id,
+                destination=destination,
+            )
+            output_console.print("[green]Restored snapshot[/green]")
+            output_console.print(f"repo: {result.repo_url}")
+            output_console.print(f"session: {session_id}")
+            output_console.print(f"message: {message_id}")
+            output_console.print(f"tag: {result.tag_ref}")
+            output_console.print(f"store commit: {result.store_commit_sha}")
+            output_console.print(f"destination: {destination}")
+            return
+
         record = restore_workspace(
             workspace=workspace,
             session_id=session_id,

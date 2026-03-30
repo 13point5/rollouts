@@ -21,6 +21,13 @@ class PushTagResult:
     pushed: bool
 
 
+@dataclass(frozen=True)
+class RemoteRestoreResult:
+    repo_url: str
+    tag_ref: str
+    store_commit_sha: str
+
+
 def resolve_workspace_source(workspace: Path) -> ResolvedWorkspace:
     workspace_path = workspace.resolve(strict=False)
     git_root = _try_resolve_git_workspace_root(workspace_path)
@@ -188,6 +195,49 @@ def restore_snapshot_to_destination(
 
         shutil.rmtree(destination, ignore_errors=True)
         raise
+
+
+def restore_remote_snapshot_to_destination(
+    *,
+    repo_url: str,
+    session_id: str,
+    message_id: str,
+    destination: Path,
+) -> RemoteRestoreResult:
+    tag_ref = build_snapshot_tag_ref(session_id=session_id, message_id=message_id)
+    if not _remote_ref_exists(remote_url=repo_url, ref_name=tag_ref):
+        raise RolloutsError(
+            f"no remote snapshot found for session {session_id!r} and message {message_id!r}"
+        )
+
+    tag_name = tag_ref.removeprefix("refs/tags/")
+    with tempfile.TemporaryDirectory(prefix="rollouts-remote-restore-") as tmp_dir:
+        store_path = Path(tmp_dir) / "store.git"
+        initialize_bare_store(store_path)
+        _run_git(
+            [
+                "--git-dir",
+                str(store_path),
+                "fetch",
+                "--quiet",
+                repo_url,
+                f"{tag_ref}:{tag_ref}",
+            ]
+        )
+        store_commit_sha = _run_git(
+            ["--git-dir", str(store_path), "rev-parse", f"{tag_name}^{{}}"]
+        ).stdout.strip()
+        restore_snapshot_to_destination(
+            store_path=store_path,
+            destination=destination,
+            store_commit_sha=store_commit_sha,
+        )
+
+    return RemoteRestoreResult(
+        repo_url=repo_url,
+        tag_ref=tag_ref,
+        store_commit_sha=store_commit_sha,
+    )
 
 
 def _clear_worktree(staging_path: Path) -> None:

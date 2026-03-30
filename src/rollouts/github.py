@@ -73,6 +73,24 @@ def get_github_repo_web_url(remote_url: str) -> str:
     return remote_url
 
 
+def normalize_github_repo_clone_url(repo_url: str) -> str:
+    repo_url = repo_url.strip()
+
+    ssh_match = re.fullmatch(r"git@github\.com:[^/]+/[^/]+\.git", repo_url)
+    if ssh_match is not None:
+        return repo_url
+
+    https_git_match = re.fullmatch(r"https://github\.com/[^/]+/[^/]+\.git", repo_url)
+    if https_git_match is not None:
+        return repo_url
+
+    https_web_match = re.fullmatch(r"https://github\.com/([^/]+/[^/]+)/?", repo_url)
+    if https_web_match is not None:
+        return f"https://github.com/{https_web_match.group(1)}.git"
+
+    return repo_url
+
+
 def _run_gh(args: list[str]) -> subprocess.CompletedProcess[str]:
     try:
         completed = subprocess.run(

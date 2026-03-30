@@ -9,6 +9,7 @@ Current prototype:
 - global installable `rollouts` command
 - `rollouts snapshot [workspace] --session --message --metadata`
 - `rollouts restore [workspace] --session --message --dest`
+- `rollouts restore --repo <repo> --session --message --dest`
 - `rollouts delete [workspace] [--session] [--message]` and `rollouts delete --all`
 - `rollouts remote set [workspace] --url <repo>`
 - `rollouts remote clear [workspace]` and `rollouts remote clear --all`
@@ -82,13 +83,25 @@ rollouts restore . \
 
 The `restore` command:
 - takes the source workspace path as its argument, defaulting to `.`
+- also accepts `--repo` to restore directly from a remote archive repo instead of a local workspace
 - requires `--session`
 - requires `--message`
 - requires `--dest`
-- finds the matching snapshot by `session_id` and `message_id`
+- with no `--repo`, finds the matching local snapshot by `session_id` and `message_id`
+- with `--repo`, looks up the remote annotated tag for the given `session_id` and `message_id`
 - extracts the stored snapshot into the destination as a plain codebase directory
 - works for snapshots created from both Git repos and plain directories
 - fails if the destination already exists
+
+Restore a snapshot directly from a remote archive repo:
+
+```bash
+rollouts restore \
+  --repo https://github.com/13point5/rollouts-opencode-rollouts-plugin-2c1c8861 \
+  --session ses_123 \
+  --message msg_001 \
+  --dest /tmp/restored
+```
 
 Configure an archive remote for a workspace:
 

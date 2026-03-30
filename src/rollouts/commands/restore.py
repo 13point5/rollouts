@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from rollouts.errors import RolloutsError
+from rollouts.github import normalize_github_repo_clone_url
 from rollouts.models import SnapshotRecord
 from rollouts.paths import ensure_app_home, get_app_paths
 from rollouts.storage.db import (
@@ -12,7 +13,9 @@ from rollouts.storage.db import (
     initialize_db,
 )
 from rollouts.storage.git_store import (
+    RemoteRestoreResult,
     resolve_workspace_source,
+    restore_remote_snapshot_to_destination,
     restore_snapshot_to_destination,
 )
 
@@ -56,3 +59,22 @@ def restore_workspace(
             store_commit_sha=snapshot.store_commit_sha,
         )
         return snapshot
+
+
+def restore_remote_workspace(
+    *,
+    repo_url: str,
+    session_id: str,
+    message_id: str,
+    destination: Path,
+) -> RemoteRestoreResult:
+    normalized_repo_url = normalize_github_repo_clone_url(repo_url)
+    if not normalized_repo_url:
+        raise RolloutsError("repo URL cannot be empty")
+
+    return restore_remote_snapshot_to_destination(
+        repo_url=normalized_repo_url,
+        session_id=session_id,
+        message_id=message_id,
+        destination=destination,
+    )
