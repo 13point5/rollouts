@@ -2,16 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rollouts.db import (
+from rollouts.errors import RolloutsError
+from rollouts.models import SnapshotRecord
+from rollouts.paths import ensure_app_home, get_app_paths
+from rollouts.storage.db import (
     connect,
     find_workspace,
     get_snapshot_by_message,
     initialize_db,
 )
-from rollouts.errors import RolloutsError
-from rollouts.git_store import resolve_workspace_source, restore_snapshot_to_destination
-from rollouts.models import SnapshotRecord
-from rollouts.paths import ensure_app_home, get_app_paths
+from rollouts.storage.git_store import (
+    resolve_workspace_source,
+    restore_snapshot_to_destination,
+)
 
 
 def restore_workspace(

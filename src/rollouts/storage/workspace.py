@@ -4,16 +4,16 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from rollouts.db import (
+from rollouts.models import ResolvedWorkspace, WorkspaceRecord
+from rollouts.paths import ensure_app_home, get_app_paths, workspace_store_path
+from rollouts.storage.db import (
     connect,
     create_workspace,
     find_workspace,
     initialize_db,
     update_workspace_root_path,
 )
-from rollouts.git_store import initialize_bare_store, resolve_workspace_source
-from rollouts.models import ResolvedWorkspace, WorkspaceRecord
-from rollouts.paths import ensure_app_home, get_app_paths, workspace_store_path
+from rollouts.storage.git_store import initialize_bare_store, resolve_workspace_source
 
 
 def ensure_workspace(

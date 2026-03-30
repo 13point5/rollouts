@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -237,6 +238,57 @@ def get_snapshot_by_message(
         return None
 
     return _snapshot_from_row(row)
+
+
+def list_snapshots(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    session_id: str | None = None,
+    message_id: str | None = None,
+) -> list[SnapshotRecord]:
+    query = """
+        SELECT
+          id,
+          workspace_id,
+          session_id,
+          message_id,
+          store_commit_sha,
+          vcs,
+          metadata,
+          captured_at
+        FROM snapshots
+        WHERE workspace_id = ?
+    """
+    params: list[str] = [workspace_id]
+    if session_id is not None:
+        query += "\n  AND session_id = ?"
+        params.append(session_id)
+    if message_id is not None:
+        query += "\n  AND message_id = ?"
+        params.append(message_id)
+
+    rows = connection.execute(query, params).fetchall()
+    return [_snapshot_from_row(row) for row in rows]
+
+
+def delete_snapshots(connection: sqlite3.Connection, *, snapshot_ids: Sequence[str]) -> int:
+    if not snapshot_ids:
+        return 0
+
+    placeholders = ", ".join("?" for _ in snapshot_ids)
+    cursor = connection.execute(
+        f"DELETE FROM snapshots WHERE id IN ({placeholders})",
+        list(snapshot_ids),
+    )
+    connection.commit()
+    return cursor.rowcount
+
+
+def delete_workspace(connection: sqlite3.Connection, *, workspace_id: str) -> int:
+    cursor = connection.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+    connection.commit()
+    return cursor.rowcount
 
 
 def _workspace_from_row(row: sqlite3.Row) -> WorkspaceRecord:

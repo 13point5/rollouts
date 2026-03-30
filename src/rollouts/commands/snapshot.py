@@ -5,16 +5,16 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-from rollouts.db import connect, create_snapshot, initialize_db
 from rollouts.errors import RolloutsError
-from rollouts.git_store import (
+from rollouts.models import SnapshotRecord
+from rollouts.paths import ensure_app_home, get_app_paths
+from rollouts.storage.db import connect, create_snapshot, initialize_db
+from rollouts.storage.git_store import (
     create_snapshot_commit,
     delete_snapshot_ref,
     resolve_workspace_source,
 )
-from rollouts.models import SnapshotRecord
-from rollouts.paths import ensure_app_home, get_app_paths
-from rollouts.workspace import ensure_workspace
+from rollouts.storage.workspace import ensure_workspace
 
 
 def snapshot_workspace(

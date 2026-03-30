@@ -9,6 +9,7 @@ Current prototype:
 - global installable `rollouts` command
 - `rollouts snapshot [workspace] --session --message --metadata`
 - `rollouts restore [workspace] --session --message --dest`
+- `rollouts delete [workspace] [--session] [--message]` and `rollouts delete --all`
 - SQLite bootstrap with a `workspaces` table
 - one bare Git store per registered workspace
 
@@ -84,6 +85,25 @@ The `restore` command:
 - extracts the stored snapshot into the destination as a plain codebase directory
 - works for snapshots created from both Git repos and plain directories
 - fails if the destination already exists
+
+Delete stored Rollouts data:
+
+```bash
+rollouts delete . --session ses_123 --message msg_001
+rollouts delete . --session ses_123
+rollouts delete .
+rollouts delete --all
+```
+
+The `delete` command:
+- defaults the workspace path to `.`
+- asks for confirmation in every mode
+- with `--session` and `--message`, deletes one stored snapshot
+- with only `--session`, deletes all stored snapshots for that session in the workspace
+- with no `--session`, deletes the whole workspace entry, its stored snapshots, and its local bare store
+- with `--all`, deletes the entire Rollouts app home, including the SQLite DB and all workspace stores
+- requires `--session` when `--message` is provided
+- does not allow combining `--all` with `--session` or `--message`
 
 The current on-disk layout is:
 
