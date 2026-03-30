@@ -4,13 +4,34 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 
 from rollouts.commands.delete import delete_data, validate_delete_args
+from rollouts.commands.push import (
+    get_push_workspace_count,
+    push_snapshots,
+    validate_push_args,
+)
+from rollouts.commands.remote import (
+    clear_all_workspace_remotes,
+    clear_workspace_remote,
+    set_global_remote_defaults,
+    set_workspace_remote,
+)
 from rollouts.commands.restore import restore_workspace
 from rollouts.commands.snapshot import snapshot_workspace
 from rollouts.errors import RolloutsError
+from rollouts.github import get_github_repo_web_url
+from rollouts.models import WorkspaceRecord
 
 app = typer.Typer(no_args_is_help=True, help="Capture and restore agent rollout workspace states.")
+remote_app = typer.Typer(no_args_is_help=True, help="Configure remote archive repositories.")
+remote_defaults_app = typer.Typer(
+    no_args_is_help=True,
+    help="Configure default GitHub archive repo creation settings.",
+)
+app.add_typer(remote_app, name="remote")
+remote_app.add_typer(remote_defaults_app, name="defaults")
 output_console = Console()
 error_console = Console(stderr=True)
 
@@ -59,6 +80,108 @@ def snapshot(
     output_console.print(f"captured at: {record.captured_at.isoformat()}")
 
 
+@remote_app.command("set")
+def remote_set(
+    workspace: Path = typer.Argument(
+        Path("."),
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path anywhere inside the source directory to configure.",
+    ),
+    remote_url: str = typer.Option(
+        ...,
+        "--url",
+        help="GitHub repository URL to use as the workspace archive remote.",
+    ),
+) -> None:
+    """Set the archive remote for a workspace."""
+
+    try:
+        workspace_record = set_workspace_remote(
+            workspace=workspace,
+            remote_url=remote_url,
+        )
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output_console.print(f"[green]Configured remote[/green] {workspace_record.remote_url}")
+    output_console.print(f"workspace: {workspace_record.root_path}")
+
+
+@remote_app.command("clear")
+def remote_clear(
+    workspace: Path = typer.Argument(
+        Path("."),
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path anywhere inside the source directory to clear. Ignored with --all.",
+    ),
+    clear_all: bool = typer.Option(
+        False,
+        "--all",
+        help="Clear stored remotes for all registered workspaces.",
+    ),
+) -> None:
+    """Clear stored archive remotes without deleting snapshots."""
+
+    try:
+        if clear_all:
+            cleared_count = clear_all_workspace_remotes()
+            output_console.print(f"[green]Cleared workspace remotes[/green] {cleared_count}")
+            return
+
+        workspace_record = clear_workspace_remote(workspace=workspace)
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output_console.print("[green]Cleared workspace remote[/green]")
+    output_console.print(f"workspace: {workspace_record.root_path}")
+
+
+@remote_defaults_app.command("set")
+def remote_defaults_set(
+    owner: str = typer.Option(
+        ...,
+        "--owner",
+        help="GitHub user or organization that should own auto-created archive repos.",
+    ),
+    prefix: str = typer.Option(
+        "rollouts-",
+        "--prefix",
+        help="Prefix to use when deriving auto-created archive repo names.",
+    ),
+    visibility: str = typer.Option(
+        "private",
+        "--visibility",
+        help="GitHub repo visibility for auto-created archive repos: private, public, or internal.",
+    ),
+) -> None:
+    """Set global defaults for auto-created GitHub archive repos."""
+
+    try:
+        defaults = set_global_remote_defaults(
+            owner=owner,
+            repo_prefix=prefix,
+            visibility=visibility,
+        )
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output_console.print("[green]Configured remote defaults[/green]")
+    output_console.print(f"owner: {defaults.owner}")
+    output_console.print(f"prefix: {defaults.repo_prefix}")
+    output_console.print(f"visibility: {defaults.visibility}")
+
+
 @app.command()
 def restore(
     workspace: Path = typer.Argument(
@@ -97,6 +220,99 @@ def restore(
     output_console.print(f"message: {record.message_id}")
     output_console.print(f"store commit: {record.store_commit_sha}")
     output_console.print(f"destination: {destination}")
+
+
+@app.command()
+def push(
+    workspace: Path = typer.Argument(
+        Path("."),
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path anywhere inside the source directory to push from. Ignored with --all.",
+    ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session",
+        help="Push only snapshots for one external chat session.",
+    ),
+    message_id: str | None = typer.Option(
+        None,
+        "--message",
+        help="Push only one snapshot for the given external message identifier.",
+    ),
+    push_all: bool = typer.Option(
+        False,
+        "--all",
+        help="Push snapshots for all workspaces with configured remotes.",
+    ),
+    create_remote: bool = typer.Option(
+        False,
+        "--create-remote",
+        help="Create and remember a GitHub archive repo when a workspace has no configured remote.",
+    ),
+) -> None:
+    """Push stored snapshots to configured archive remotes."""
+
+    try:
+        validate_push_args(
+            session_id=session_id,
+            message_id=message_id,
+            push_all=push_all,
+            create_remote=create_remote,
+        )
+        workspace_total = get_push_workspace_count(
+            workspace=workspace,
+            session_id=session_id,
+            message_id=message_id,
+            push_all=push_all,
+            create_remote=create_remote,
+        )
+        remote_urls: list[str] = []
+        seen_remote_urls: set[str] = set()
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeElapsedColumn(),
+            console=output_console,
+        ) as progress:
+            task_id = progress.add_task(
+                "Pushing workspaces",
+                total=workspace_total,
+            )
+
+            def on_workspace_pushed(workspace_record: WorkspaceRecord) -> None:
+                progress.update(task_id, advance=1)
+                if workspace_record.remote_url is not None:
+                    remote_url = get_github_repo_web_url(workspace_record.remote_url)
+                    if remote_url not in seen_remote_urls:
+                        seen_remote_urls.add(remote_url)
+                        remote_urls.append(remote_url)
+
+            result = push_snapshots(
+                workspace=workspace,
+                session_id=session_id,
+                message_id=message_id,
+                push_all=push_all,
+                create_remote=create_remote,
+                on_workspace_pushed=on_workspace_pushed,
+            )
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output_console.print(f"[green]Pushed snapshots[/green] {result.pushed_snapshots}")
+    output_console.print(f"skipped existing: {result.skipped_snapshots}")
+    output_console.print(f"workspaces: {result.workspace_count}")
+    output_console.print(f"created remotes: {result.created_remotes}")
+    if remote_urls:
+        output_console.print("")
+        output_console.print("Remote URLs")
+        for remote_url in remote_urls:
+            output_console.print(f"[link={remote_url}]{remote_url}[/link]")
 
 
 @app.command()

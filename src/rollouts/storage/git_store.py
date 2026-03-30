@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
 import subprocess
 import tarfile
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
 from rollouts.errors import RolloutsError
-from rollouts.models import ResolvedWorkspace
+from rollouts.models import ResolvedWorkspace, SnapshotRecord
+
+
+@dataclass(frozen=True)
+class PushTagResult:
+    tag_ref: str
+    pushed: bool
 
 
 def resolve_workspace_source(workspace: Path) -> ResolvedWorkspace:
@@ -95,6 +103,67 @@ def delete_snapshot_ref(*, store_path: Path, snapshot_id: str) -> None:
     if completed.returncode not in (0, 1):
         message = completed.stderr.strip() or completed.stdout.strip() or "git command failed"
         raise RolloutsError(message)
+
+
+def build_snapshot_tag_ref(*, session_id: str, message_id: str) -> str:
+    session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    message_hash = hashlib.sha256(message_id.encode("utf-8")).hexdigest()
+    return f"refs/tags/rollouts/session/{session_hash}/message/{message_hash}"
+
+
+def push_snapshot_tag(
+    *,
+    store_path: Path,
+    remote_url: str,
+    snapshot: SnapshotRecord,
+) -> PushTagResult:
+    tag_ref = build_snapshot_tag_ref(
+        session_id=snapshot.session_id,
+        message_id=snapshot.message_id,
+    )
+    if _remote_ref_exists(remote_url=remote_url, ref_name=tag_ref):
+        return PushTagResult(tag_ref=tag_ref, pushed=False)
+
+    tag_name = tag_ref.removeprefix("refs/tags/")
+    tag_message = _build_snapshot_tag_message(snapshot)
+    push_error: Exception | None = None
+    tag_created = False
+
+    try:
+        _run_git(
+            [
+                "--git-dir",
+                str(store_path),
+                "tag",
+                "-a",
+                tag_name,
+                snapshot.store_commit_sha,
+                "-m",
+                tag_message,
+            ]
+        )
+        tag_created = True
+        _run_git(
+            [
+                "--git-dir",
+                str(store_path),
+                "push",
+                remote_url,
+                f"{tag_ref}:{tag_ref}",
+            ]
+        )
+    except Exception as error:
+        push_error = error
+        raise
+    finally:
+        if tag_created:
+            try:
+                _delete_local_tag(store_path=store_path, tag_name=tag_name)
+            except RolloutsError:
+                if push_error is None:
+                    raise
+
+    return PushTagResult(tag_ref=tag_ref, pushed=True)
 
 
 def restore_snapshot_to_destination(
@@ -317,3 +386,34 @@ def _run_git_optional_text(args: list[str]) -> str | None:
         return None
 
     return completed.stdout.strip() or None
+
+
+def _build_snapshot_tag_message(snapshot: SnapshotRecord) -> str:
+    payload = {
+        "schema_version": 1,
+        "snapshot_id": snapshot.id,
+        "session_id": snapshot.session_id,
+        "message_id": snapshot.message_id,
+        "captured_at": snapshot.captured_at.isoformat(),
+        "store_commit_sha": snapshot.store_commit_sha,
+        "vcs": json.loads(snapshot.vcs),
+        "metadata": json.loads(snapshot.metadata),
+    }
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _delete_local_tag(*, store_path: Path, tag_name: str) -> None:
+    completed = subprocess.run(
+        ["git", "--git-dir", str(store_path), "tag", "-d", tag_name],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode not in (0, 1):
+        message = completed.stderr.strip() or completed.stdout.strip() or "git command failed"
+        raise RolloutsError(message)
+
+
+def _remote_ref_exists(*, remote_url: str, ref_name: str) -> bool:
+    completed = _run_git(["ls-remote", "--refs", remote_url, ref_name])
+    return bool(completed.stdout.strip())

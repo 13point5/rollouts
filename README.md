@@ -10,6 +10,10 @@ Current prototype:
 - `rollouts snapshot [workspace] --session --message --metadata`
 - `rollouts restore [workspace] --session --message --dest`
 - `rollouts delete [workspace] [--session] [--message]` and `rollouts delete --all`
+- `rollouts remote set [workspace] --url <repo>`
+- `rollouts remote clear [workspace]` and `rollouts remote clear --all`
+- `rollouts remote defaults set --owner <owner> [--prefix <prefix>]`
+- `rollouts push [workspace] [--session] [--message]` and `rollouts push --all`
 - SQLite bootstrap with a `workspaces` table
 - one bare Git store per registered workspace
 
@@ -86,6 +90,67 @@ The `restore` command:
 - works for snapshots created from both Git repos and plain directories
 - fails if the destination already exists
 
+Configure an archive remote for a workspace:
+
+```bash
+rollouts remote set . --url git@github.com:you/my-project-rollouts.git
+```
+
+The `remote set` command:
+- defaults the workspace path to `.`
+- automatically initializes the workspace if it has not been registered yet
+- stores one archive repo URL per workspace
+- uses the user’s normal local Git credentials when later pushing
+
+Clear stored archive remotes without deleting snapshots:
+
+```bash
+rollouts remote clear .
+rollouts remote clear --all
+```
+
+The `remote clear` command:
+- defaults the workspace path to `.`
+- with no `--all`, clears the stored `remote_url` for one workspace
+- with `--all`, clears stored `remote_url`s for every registered workspace
+- does not delete snapshots, workspace records, or remote defaults
+- is useful when you deleted archive repos and want `push --create-remote` to recreate them
+
+Configure defaults for auto-created GitHub archive repos:
+
+```bash
+rollouts remote defaults set --owner you --prefix rollouts- --visibility private
+```
+
+The `remote defaults set` command:
+- stores one global owner/prefix/visibility config for repo auto-creation
+- requires the GitHub CLI `gh` to be installed
+- does not create any repos by itself
+
+Push stored snapshots to archive remotes:
+
+```bash
+rollouts push . --session ses_123 --message msg_001
+rollouts push . --session ses_123
+rollouts push .
+rollouts push --all
+rollouts push . --create-remote
+rollouts push --all --create-remote
+```
+
+The `push` command:
+- defaults the workspace path to `.`
+- with `--session` and `--message`, pushes one snapshot
+- with only `--session`, pushes all snapshots for that session in the workspace
+- with no `--session`, pushes all snapshots for that workspace
+- with `--all`, pushes all snapshots for all workspaces that have a configured remote
+- with `--create-remote`, auto-creates and stores a GitHub archive repo for any workspace in scope that does not already have a configured remote
+- requires `--session` when `--message` is provided
+- does not allow combining `--all` with `--session` or `--message`
+- skips snapshots whose remote tag already exists
+- stores remote metadata in annotated tags, not just in SQLite
+- uses `gh repo create` for repo creation and then normal `git push` for snapshot upload
+
 Delete stored Rollouts data:
 
 ```bash
@@ -132,7 +197,17 @@ Current database schema:
 | `id` | `TEXT` | Primary key. Internal workspace id. |
 | `root_path` | `TEXT` | Unique resolved root path for the tracked source directory. |
 | `store_path` | `TEXT` | Path to the workspace bare Git store under `~/.rollouts/workspaces/<workspace_id>/store.git`. |
+| `remote_url` | `TEXT \| NULL` | Optional archive repo URL used by `rollouts push`. |
 | `created_at` | `TEXT` | UTC ISO 8601 timestamp for workspace registration. |
+
+### `remote_defaults`
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `INTEGER` | Fixed to `1`. Single-row defaults table. |
+| `owner` | `TEXT` | GitHub user or organization for auto-created archive repos. |
+| `repo_prefix` | `TEXT` | Prefix used when deriving auto-created archive repo names. |
+| `visibility` | `TEXT` | `private`, `public`, or `internal`. |
 
 ### `snapshots`
 
@@ -161,6 +236,30 @@ Current database schema:
 | Field | Type | Notes |
 | --- | --- | --- |
 | varies by integration | JSON object | Stored as-is for later post-processing. Rollouts does not currently enforce a fixed schema for this payload. |
+
+## Remote Tags
+
+Pushed snapshots use annotated tags in the configured archive repo:
+
+```text
+refs/tags/rollouts/session/<session_hash>/message/<message_hash>
+```
+
+The tag annotation stores:
+- `schema_version`
+- `snapshot_id`
+- raw `session_id`
+- raw `message_id`
+- `captured_at`
+- `store_commit_sha`
+- parsed `vcs`
+- parsed `metadata`
+
+Auto-created archive repos use a derived name like:
+
+```text
+<prefix><workspace-slug>-<workspace-id-prefix>
+```
 
 ## Development
 

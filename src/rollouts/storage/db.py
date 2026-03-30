@@ -6,13 +6,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from rollouts.errors import RolloutsError
-from rollouts.models import AppPaths, SnapshotRecord, WorkspaceRecord
+from rollouts.models import AppPaths, RemoteDefaultsRecord, SnapshotRecord, WorkspaceRecord
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
   root_path TEXT NOT NULL UNIQUE,
   store_path TEXT NOT NULL,
+  remote_url TEXT UNIQUE,
   created_at TEXT NOT NULL
 );
 
@@ -27,6 +28,13 @@ CREATE TABLE IF NOT EXISTS snapshots (
   captured_at TEXT NOT NULL,
   UNIQUE (workspace_id, session_id, message_id),
   FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+);
+
+CREATE TABLE IF NOT EXISTS remote_defaults (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  owner TEXT NOT NULL,
+  repo_prefix TEXT NOT NULL,
+  visibility TEXT NOT NULL CHECK (visibility IN ('private', 'public', 'internal'))
 );
 """
 
@@ -48,7 +56,7 @@ def get_workspace_by_root_path(
 ) -> WorkspaceRecord | None:
     row = connection.execute(
         """
-        SELECT id, root_path, store_path, created_at
+        SELECT id, root_path, store_path, remote_url, created_at
         FROM workspaces
         WHERE root_path = ?
         """,
@@ -67,7 +75,7 @@ def _get_workspace_for_path(
     resolved_path = workspace_path.resolve(strict=False)
     rows = connection.execute(
         """
-        SELECT id, root_path, store_path, created_at
+        SELECT id, root_path, store_path, remote_url, created_at
         FROM workspaces
         """
     ).fetchall()
@@ -107,10 +115,10 @@ def create_workspace(
     created_at = datetime.now(timezone.utc)
     connection.execute(
         """
-        INSERT INTO workspaces (id, root_path, store_path, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO workspaces (id, root_path, store_path, remote_url, created_at)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (workspace_id, str(root_path), str(store_path), created_at.isoformat()),
+        (workspace_id, str(root_path), str(store_path), None, created_at.isoformat()),
     )
     connection.commit()
 
@@ -118,6 +126,7 @@ def create_workspace(
         id=workspace_id,
         root_path=root_path,
         store_path=store_path,
+        remote_url=None,
         created_at=created_at,
     )
 
@@ -140,7 +149,7 @@ def update_workspace_root_path(
 
     row = connection.execute(
         """
-        SELECT id, root_path, store_path, created_at
+        SELECT id, root_path, store_path, remote_url, created_at
         FROM workspaces
         WHERE id = ?
         """,
@@ -150,6 +159,139 @@ def update_workspace_root_path(
         raise RuntimeError(f"workspace disappeared during root update: {workspace_id}")
 
     return _workspace_from_row(row)
+
+
+def set_workspace_remote_url(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    remote_url: str,
+) -> WorkspaceRecord:
+    conflicting_row = connection.execute(
+        """
+        SELECT id, root_path, store_path, remote_url, created_at
+        FROM workspaces
+        WHERE remote_url = ? AND id != ?
+        """,
+        (remote_url, workspace_id),
+    ).fetchone()
+    if conflicting_row is not None:
+        conflicting_workspace = _workspace_from_row(conflicting_row)
+        raise RolloutsError(
+            f"remote URL is already configured for workspace: {conflicting_workspace.root_path}"
+        )
+
+    connection.execute(
+        """
+        UPDATE workspaces
+        SET remote_url = ?
+        WHERE id = ?
+        """,
+        (remote_url, workspace_id),
+    )
+    try:
+        connection.commit()
+    except sqlite3.IntegrityError as error:
+        raise RolloutsError(f"remote URL is already configured: {remote_url}") from error
+
+    row = connection.execute(
+        """
+        SELECT id, root_path, store_path, remote_url, created_at
+        FROM workspaces
+        WHERE id = ?
+        """,
+        (workspace_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"workspace disappeared during remote update: {workspace_id}")
+
+    return _workspace_from_row(row)
+
+
+def clear_workspace_remote_url(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+) -> WorkspaceRecord:
+    connection.execute(
+        """
+        UPDATE workspaces
+        SET remote_url = NULL
+        WHERE id = ?
+        """,
+        (workspace_id,),
+    )
+    connection.commit()
+
+    row = connection.execute(
+        """
+        SELECT id, root_path, store_path, remote_url, created_at
+        FROM workspaces
+        WHERE id = ?
+        """,
+        (workspace_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"workspace disappeared during remote clear: {workspace_id}")
+
+    return _workspace_from_row(row)
+
+
+def clear_all_workspace_remote_urls(connection: sqlite3.Connection) -> int:
+    cursor = connection.execute(
+        """
+        UPDATE workspaces
+        SET remote_url = NULL
+        WHERE remote_url IS NOT NULL
+        """
+    )
+    connection.commit()
+    return cursor.rowcount
+
+
+def get_remote_defaults(connection: sqlite3.Connection) -> RemoteDefaultsRecord | None:
+    row = connection.execute(
+        """
+        SELECT owner, repo_prefix, visibility
+        FROM remote_defaults
+        WHERE id = 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+
+    return RemoteDefaultsRecord(
+        owner=row["owner"],
+        repo_prefix=row["repo_prefix"],
+        visibility=row["visibility"],
+    )
+
+
+def set_remote_defaults(
+    connection: sqlite3.Connection,
+    *,
+    owner: str,
+    repo_prefix: str,
+    visibility: str,
+) -> RemoteDefaultsRecord:
+    connection.execute(
+        """
+        INSERT INTO remote_defaults (id, owner, repo_prefix, visibility)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          owner = excluded.owner,
+          repo_prefix = excluded.repo_prefix,
+          visibility = excluded.visibility
+        """,
+        (owner, repo_prefix, visibility),
+    )
+    connection.commit()
+
+    return RemoteDefaultsRecord(
+        owner=owner,
+        repo_prefix=repo_prefix,
+        visibility=visibility,
+    )
 
 
 def create_snapshot(
@@ -267,9 +409,27 @@ def list_snapshots(
     if message_id is not None:
         query += "\n  AND message_id = ?"
         params.append(message_id)
+    query += "\n  ORDER BY captured_at ASC"
 
     rows = connection.execute(query, params).fetchall()
     return [_snapshot_from_row(row) for row in rows]
+
+
+def list_workspaces(
+    connection: sqlite3.Connection,
+    *,
+    only_with_remote: bool = False,
+) -> list[WorkspaceRecord]:
+    query = """
+        SELECT id, root_path, store_path, remote_url, created_at
+        FROM workspaces
+    """
+    if only_with_remote:
+        query += "\nWHERE remote_url IS NOT NULL"
+    query += "\nORDER BY root_path ASC"
+
+    rows = connection.execute(query).fetchall()
+    return [_workspace_from_row(row) for row in rows]
 
 
 def delete_snapshots(connection: sqlite3.Connection, *, snapshot_ids: Sequence[str]) -> int:
@@ -296,6 +456,7 @@ def _workspace_from_row(row: sqlite3.Row) -> WorkspaceRecord:
         id=row["id"],
         root_path=Path(row["root_path"]),
         store_path=Path(row["store_path"]),
+        remote_url=row["remote_url"],
         created_at=row["created_at"],
     )
 

@@ -20,7 +20,16 @@ class WorkspaceRecord(BaseModel):
     id: str
     root_path: Path
     store_path: Path
+    remote_url: str | None = None
     created_at: datetime
+
+
+class RemoteDefaultsRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    owner: str
+    repo_prefix: str
+    visibility: str
 
 
 class ResolvedWorkspace(BaseModel):
