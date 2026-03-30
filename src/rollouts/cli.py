@@ -8,47 +8,15 @@ from rich.console import Console
 from rollouts.errors import RolloutsError
 from rollouts.restore import restore_workspace
 from rollouts.snapshot import snapshot_workspace
-from rollouts.workspace import ensure_workspace
 
 app = typer.Typer(no_args_is_help=True, help="Capture and restore agent rollout workspace states.")
-console = Console(stderr=True)
+output_console = Console()
+error_console = Console(stderr=True)
 
 
 @app.callback()
 def main() -> None:
     """Rollouts command group."""
-
-
-@app.command()
-def init(
-    workspace: Path = typer.Argument(
-        ...,
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        readable=True,
-        resolve_path=True,
-        help="Path anywhere inside the directory you want to track.",
-    ),
-) -> None:
-    """Register a workspace and create its internal snapshot store."""
-
-    try:
-        result = ensure_workspace(workspace)
-    except RolloutsError as error:
-        console.print(f"[red]Error:[/red] {error}")
-        raise typer.Exit(code=1) from error
-
-    output = Console()
-    verb = (
-        "[green]Initialized workspace[/green]"
-        if result.created
-        else "[yellow]Workspace already registered[/yellow]"
-    )
-    record = result.workspace
-    output.print(f"{verb} {record.id}")
-    output.print(f"root: {record.root_path}")
-    output.print(f"store: {record.store_path}")
 
 
 @app.command()
@@ -80,15 +48,14 @@ def snapshot(
             metadata=metadata,
         )
     except RolloutsError as error:
-        console.print(f"[red]Error:[/red] {error}")
+        error_console.print(f"[red]Error:[/red] {error}")
         raise typer.Exit(code=1) from error
 
-    output = Console()
-    output.print(f"[green]Created snapshot[/green] {record.id}")
-    output.print(f"session: {record.session_id}")
-    output.print(f"message: {record.message_id}")
-    output.print(f"store commit: {record.store_commit_sha}")
-    output.print(f"captured at: {record.captured_at.isoformat()}")
+    output_console.print(f"[green]Created snapshot[/green] {record.id}")
+    output_console.print(f"session: {record.session_id}")
+    output_console.print(f"message: {record.message_id}")
+    output_console.print(f"store commit: {record.store_commit_sha}")
+    output_console.print(f"captured at: {record.captured_at.isoformat()}")
 
 
 @app.command()
@@ -121,12 +88,11 @@ def restore(
             destination=destination,
         )
     except RolloutsError as error:
-        console.print(f"[red]Error:[/red] {error}")
+        error_console.print(f"[red]Error:[/red] {error}")
         raise typer.Exit(code=1) from error
 
-    output = Console()
-    output.print(f"[green]Restored snapshot[/green] {record.id}")
-    output.print(f"session: {record.session_id}")
-    output.print(f"message: {record.message_id}")
-    output.print(f"store commit: {record.store_commit_sha}")
-    output.print(f"destination: {destination}")
+    output_console.print(f"[green]Restored snapshot[/green] {record.id}")
+    output_console.print(f"session: {record.session_id}")
+    output_console.print(f"message: {record.message_id}")
+    output_console.print(f"store commit: {record.store_commit_sha}")
+    output_console.print(f"destination: {destination}")

@@ -26,8 +26,7 @@ def snapshot_workspace(
 ) -> SnapshotRecord:
     metadata = _validate_metadata(metadata)
     resolved_workspace = resolve_workspace_source(workspace)
-    workspace_result = ensure_workspace(workspace)
-    workspace_record = workspace_result.workspace
+    workspace_record = ensure_workspace(workspace, resolved_workspace=resolved_workspace)
 
     paths = get_app_paths()
     ensure_app_home(paths)

@@ -7,7 +7,6 @@ Python CLI for capturing and restoring agent rollout workspace states.
 Current prototype:
 - `uv`-managed Python CLI
 - global installable `rollouts` command
-- `rollouts init <workspace>`
 - `rollouts snapshot [workspace] --session --message --metadata`
 - `rollouts restore [workspace] --session --message --dest`
 - SQLite bootstrap with a `workspaces` table
@@ -38,27 +37,7 @@ rollouts --help
 
 ## Usage
 
-Initialize a workspace:
-
-```bash
-uv run rollouts init .
-```
-
-Or, after `uv tool install`:
-
-```bash
-rollouts init .
-```
-
-The `init` command:
-- accepts one argument: a path inside the directory you want to track
-- uses the Git repository root when the path is inside a Git repo
-- otherwise uses the directory path itself as the workspace root
-- can update an existing workspace root if the same directory later becomes Git-backed
-- creates the app home at `~/.rollouts` or `$ROLLOUTS_HOME`
-- creates `rollouts.sqlite`
-- creates a bare store for the workspace
-- inserts a row into `workspaces`
+There is no separate `init` command. The first `snapshot` call automatically registers the workspace, creates the app home at `~/.rollouts` or `$ROLLOUTS_HOME`, bootstraps `rollouts.sqlite`, and creates the workspace bare store.
 
 Create a snapshot for a session message:
 
@@ -76,6 +55,9 @@ The `snapshot` command:
 - requires `--metadata`
 - expects `--metadata` to be an inline JSON string
 - automatically initializes the workspace if it has not been registered yet
+- uses the Git repository root when the path is inside a Git repo
+- otherwise uses the directory path itself as the workspace root
+- can update an existing workspace root if the same directory later becomes Git-backed
 - snapshots the current workspace state
 - if the source is a Git repo, snapshots tracked and untracked non-ignored files
 - if the source is a plain directory, snapshots files recursively and excludes `.git`
@@ -116,7 +98,7 @@ The current on-disk layout is:
 If you want to test without touching your real home directory:
 
 ```bash
-ROLLOUTS_HOME="$(mktemp -d)" rollouts init .
+ROLLOUTS_HOME="$(mktemp -d)" rollouts snapshot . --session ses_test --message msg_test --metadata '{"event":"test"}'
 ```
 
 ## Schema

@@ -60,7 +60,7 @@ def get_workspace_by_root_path(
     return _workspace_from_row(row)
 
 
-def get_workspace_for_path(
+def _get_workspace_for_path(
     connection: sqlite3.Connection, workspace_path: Path
 ) -> WorkspaceRecord | None:
     resolved_path = workspace_path.resolve(strict=False)
@@ -93,7 +93,7 @@ def find_workspace(
     if exact_workspace is not None:
         return exact_workspace
 
-    return get_workspace_for_path(connection, workspace_path)
+    return _get_workspace_for_path(connection, workspace_path)
 
 
 def create_workspace(

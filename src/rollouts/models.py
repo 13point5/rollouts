@@ -23,13 +23,6 @@ class WorkspaceRecord(BaseModel):
     created_at: datetime
 
 
-class WorkspaceInitResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    workspace: WorkspaceRecord
-    created: bool
-
-
 class ResolvedWorkspace(BaseModel):
     model_config = ConfigDict(frozen=True)
 
