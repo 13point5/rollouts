@@ -1,10 +1,11 @@
-# rollouts
+# Rollouts
 
-Python CLI for capturing and restoring agent rollout workspace states.
+A CLI for capturing agent rollouts and codebase snapshots at every turn. This data can be used for SFT, RL, and Continual Learning.
 
 ## Current status
 
 Current prototype:
+
 - `uv`-managed Python CLI
 - global installable `rollouts` command
 - `rollouts snapshot [workspace] --session --message --metadata`
@@ -18,8 +19,11 @@ Current prototype:
 - SQLite bootstrap with a `workspaces` table
 - one bare Git store per registered workspace
 
-Not built yet:
-- `rollouts list`
+## Coming soon
+
+The current CLI focuses on snapshot storage, restore, and archive push/pull primitives. The next major piece is first-class rollout tracking from agent runtimes like OpenCode, Codex, Claude Code, and similar coding agents.
+
+We also plan to add commands for uploading collected trajectories directly to Hugging Face datasets for downstream analysis, training, and continual learning workflows.
 
 ## Install
 
@@ -55,6 +59,7 @@ rollouts snapshot . \
 ```
 
 The `snapshot` command:
+
 - defaults the workspace path to `.`
 - requires `--session`
 - requires `--message`
@@ -82,6 +87,7 @@ rollouts restore . \
 ```
 
 The `restore` command:
+
 - takes the source workspace path as its argument, defaulting to `.`
 - also accepts `--repo` to restore directly from a remote archive repo instead of a local workspace
 - requires `--session`
@@ -110,6 +116,7 @@ rollouts remote set . --url git@github.com:you/my-project-rollouts.git
 ```
 
 The `remote set` command:
+
 - defaults the workspace path to `.`
 - automatically initializes the workspace if it has not been registered yet
 - stores one archive repo URL per workspace
@@ -123,6 +130,7 @@ rollouts remote clear --all
 ```
 
 The `remote clear` command:
+
 - defaults the workspace path to `.`
 - with no `--all`, clears the stored `remote_url` for one workspace
 - with `--all`, clears stored `remote_url`s for every registered workspace
@@ -136,6 +144,7 @@ rollouts remote defaults set --owner you --prefix rollouts- --visibility private
 ```
 
 The `remote defaults set` command:
+
 - stores one global owner/prefix/visibility config for repo auto-creation
 - requires the GitHub CLI `gh` to be installed
 - does not create any repos by itself
@@ -152,6 +161,7 @@ rollouts push --all --create-remote
 ```
 
 The `push` command:
+
 - defaults the workspace path to `.`
 - with `--session` and `--message`, pushes one snapshot
 - with only `--session`, pushes all snapshots for that session in the workspace
@@ -174,6 +184,7 @@ rollouts delete --all
 ```
 
 The `delete` command:
+
 - defaults the workspace path to `.`
 - asks for confirmation in every mode
 - with `--session` and `--message`, deletes one stored snapshot
@@ -205,49 +216,49 @@ Current database schema:
 
 ### `workspaces`
 
-| Column | Type | Notes |
-| --- | --- | --- |
-| `id` | `TEXT` | Primary key. Internal workspace id. |
-| `root_path` | `TEXT` | Unique resolved root path for the tracked source directory. |
-| `store_path` | `TEXT` | Path to the workspace bare Git store under `~/.rollouts/workspaces/<workspace_id>/store.git`. |
-| `remote_url` | `TEXT \| NULL` | Optional archive repo URL used by `rollouts push`. |
-| `created_at` | `TEXT` | UTC ISO 8601 timestamp for workspace registration. |
+| Column       | Type           | Notes                                                                                         |
+| ------------ | -------------- | --------------------------------------------------------------------------------------------- |
+| `id`         | `TEXT`         | Primary key. Internal workspace id.                                                           |
+| `root_path`  | `TEXT`         | Unique resolved root path for the tracked source directory.                                   |
+| `store_path` | `TEXT`         | Path to the workspace bare Git store under `~/.rollouts/workspaces/<workspace_id>/store.git`. |
+| `remote_url` | `TEXT \| NULL` | Optional archive repo URL used by `rollouts push`.                                            |
+| `created_at` | `TEXT`         | UTC ISO 8601 timestamp for workspace registration.                                            |
 
 ### `remote_defaults`
 
-| Column | Type | Notes |
-| --- | --- | --- |
-| `id` | `INTEGER` | Fixed to `1`. Single-row defaults table. |
-| `owner` | `TEXT` | GitHub user or organization for auto-created archive repos. |
-| `repo_prefix` | `TEXT` | Prefix used when deriving auto-created archive repo names. |
-| `visibility` | `TEXT` | `private`, `public`, or `internal`. |
+| Column        | Type      | Notes                                                       |
+| ------------- | --------- | ----------------------------------------------------------- |
+| `id`          | `INTEGER` | Fixed to `1`. Single-row defaults table.                    |
+| `owner`       | `TEXT`    | GitHub user or organization for auto-created archive repos. |
+| `repo_prefix` | `TEXT`    | Prefix used when deriving auto-created archive repo names.  |
+| `visibility`  | `TEXT`    | `private`, `public`, or `internal`.                         |
 
 ### `snapshots`
 
-| Column | Type | Notes |
-| --- | --- | --- |
-| `id` | `TEXT` | Primary key. Internal snapshot id. |
-| `workspace_id` | `TEXT` | Foreign key to `workspaces.id`. |
-| `session_id` | `TEXT` | External chat session identifier. |
-| `message_id` | `TEXT` | External message identifier. |
-| `store_commit_sha` | `TEXT` | Commit SHA in the workspace bare store for this snapshot. |
-| `vcs` | `TEXT` | JSON string with per-snapshot VCS context. |
-| `metadata` | `TEXT` | Raw inline metadata JSON string from the hook or caller. |
-| `captured_at` | `TEXT` | UTC ISO 8601 timestamp generated by the CLI when the snapshot is created. |
+| Column             | Type   | Notes                                                                     |
+| ------------------ | ------ | ------------------------------------------------------------------------- |
+| `id`               | `TEXT` | Primary key. Internal snapshot id.                                        |
+| `workspace_id`     | `TEXT` | Foreign key to `workspaces.id`.                                           |
+| `session_id`       | `TEXT` | External chat session identifier.                                         |
+| `message_id`       | `TEXT` | External message identifier.                                              |
+| `store_commit_sha` | `TEXT` | Commit SHA in the workspace bare store for this snapshot.                 |
+| `vcs`              | `TEXT` | JSON string with per-snapshot VCS context.                                |
+| `metadata`         | `TEXT` | Raw inline metadata JSON string from the hook or caller.                  |
+| `captured_at`      | `TEXT` | UTC ISO 8601 timestamp generated by the CLI when the snapshot is created. |
 
 ### `snapshots.vcs`
 
-| Field | Type | When present | Notes |
-| --- | --- | --- | --- |
-| `vcs` | `string \| null` | Always | `"git"` for Git-backed snapshots, otherwise `null`. |
-| `worktree_path` | `string` | Git only | Resolved top-level path returned by `git rev-parse --show-toplevel`. For linked worktrees, this is the linked worktree root, not the shared common Git dir. |
-| `branch` | `string \| null` | Git only | Current branch name when `HEAD` is attached. `null` in detached HEAD state. |
-| `head_commit` | `string \| null` | Git only | Current `HEAD` commit SHA at snapshot time. |
+| Field           | Type             | When present | Notes                                                                                                                                                       |
+| --------------- | ---------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vcs`           | `string \| null` | Always       | `"git"` for Git-backed snapshots, otherwise `null`.                                                                                                         |
+| `worktree_path` | `string`         | Git only     | Resolved top-level path returned by `git rev-parse --show-toplevel`. For linked worktrees, this is the linked worktree root, not the shared common Git dir. |
+| `branch`        | `string \| null` | Git only     | Current branch name when `HEAD` is attached. `null` in detached HEAD state.                                                                                 |
+| `head_commit`   | `string \| null` | Git only     | Current `HEAD` commit SHA at snapshot time.                                                                                                                 |
 
 ### `snapshots.metadata`
 
-| Field | Type | Notes |
-| --- | --- | --- |
+| Field                 | Type        | Notes                                                                                                        |
+| --------------------- | ----------- | ------------------------------------------------------------------------------------------------------------ |
 | varies by integration | JSON object | Stored as-is for later post-processing. Rollouts does not currently enforce a fixed schema for this payload. |
 
 ## Remote Tags
@@ -259,6 +270,7 @@ refs/tags/rollouts/session/<session_hash>/message/<message_hash>
 ```
 
 The tag annotation stores:
+
 - `schema_version`
 - `snapshot_id`
 - raw `session_id`
@@ -284,6 +296,7 @@ uv run ty check src
 ```
 
 Pre-commit hooks are configured for:
+
 - `ruff --fix`
 - `ruff format`
 - `ty check src/`
