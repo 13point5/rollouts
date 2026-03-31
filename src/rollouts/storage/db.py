@@ -172,19 +172,11 @@ def update_workspace_root_path(
         (str(root_path), workspace_id),
     )
     connection.commit()
-
-    row = connection.execute(
-        """
-        SELECT id, root_path, store_path, remote_url, created_at
-        FROM workspaces
-        WHERE id = ?
-        """,
-        (workspace_id,),
-    ).fetchone()
-    if row is None:
-        raise RuntimeError(f"workspace disappeared during root update: {workspace_id}")
-
-    return _workspace_from_row(row)
+    return _require_workspace_by_id(
+        connection,
+        workspace_id=workspace_id,
+        missing_message=f"workspace disappeared during root update: {workspace_id}",
+    )
 
 
 def set_workspace_remote_url(
@@ -220,18 +212,11 @@ def set_workspace_remote_url(
     except sqlite3.IntegrityError as error:
         raise RolloutsError(f"remote URL is already configured: {remote_url}") from error
 
-    row = connection.execute(
-        """
-        SELECT id, root_path, store_path, remote_url, created_at
-        FROM workspaces
-        WHERE id = ?
-        """,
-        (workspace_id,),
-    ).fetchone()
-    if row is None:
-        raise RuntimeError(f"workspace disappeared during remote update: {workspace_id}")
-
-    return _workspace_from_row(row)
+    return _require_workspace_by_id(
+        connection,
+        workspace_id=workspace_id,
+        missing_message=f"workspace disappeared during remote update: {workspace_id}",
+    )
 
 
 def clear_workspace_remote_url(
@@ -248,19 +233,11 @@ def clear_workspace_remote_url(
         (workspace_id,),
     )
     connection.commit()
-
-    row = connection.execute(
-        """
-        SELECT id, root_path, store_path, remote_url, created_at
-        FROM workspaces
-        WHERE id = ?
-        """,
-        (workspace_id,),
-    ).fetchone()
-    if row is None:
-        raise RuntimeError(f"workspace disappeared during remote clear: {workspace_id}")
-
-    return _workspace_from_row(row)
+    return _require_workspace_by_id(
+        connection,
+        workspace_id=workspace_id,
+        missing_message=f"workspace disappeared during remote clear: {workspace_id}",
+    )
 
 
 def clear_all_workspace_remote_urls(connection: sqlite3.Connection) -> int:
@@ -519,6 +496,26 @@ def delete_workspace(connection: sqlite3.Connection, *, workspace_id: str) -> in
     cursor = connection.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
     connection.commit()
     return cursor.rowcount
+
+
+def _require_workspace_by_id(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    missing_message: str,
+) -> WorkspaceRecord:
+    row = connection.execute(
+        """
+        SELECT id, root_path, store_path, remote_url, created_at
+        FROM workspaces
+        WHERE id = ?
+        """,
+        (workspace_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(missing_message)
+
+    return _workspace_from_row(row)
 
 
 def _get_workspace_by_id(
