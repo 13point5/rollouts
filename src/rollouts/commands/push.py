@@ -35,6 +35,12 @@ class PushScopeCounts:
     snapshot_count: int
 
 
+@dataclass(frozen=True)
+class PushWorkspaceBatch:
+    workspace_record: WorkspaceRecord
+    snapshots: list[SnapshotRecord]
+
+
 WorkspaceProgressCallback = Callable[[WorkspaceRecord], None]
 SnapshotProgressCallback = Callable[[SnapshotRecord], None]
 
@@ -58,71 +64,25 @@ def push_snapshots(
 
     paths = get_app_paths()
     ensure_app_home(paths)
+
     with connect(paths) as connection:
         initialize_db(connection)
 
-        if push_all:
-            workspaces = list_workspaces(connection, only_with_remote=not create_remote)
-            if not workspaces:
-                if create_remote:
-                    raise RolloutsError("no registered workspaces found")
-                raise RolloutsError("no workspaces with configured remotes")
-
-            return _push_all_workspaces(
-                connection=connection,
-                workspace_records=workspaces,
-                create_remote=create_remote,
-                on_workspace_pushed=on_workspace_pushed,
-                on_snapshot_pushed=on_snapshot_pushed,
-            )
-
-        workspace_path = workspace.resolve(strict=False)
-        resolved_workspace = resolve_workspace_source(workspace)
-        workspace_record = find_workspace(
+        workspace_batches = _resolve_push_scope(
             connection=connection,
-            workspace_path=workspace_path,
-            resolved_root_path=resolved_workspace.root_path,
-        )
-        if workspace_record is None:
-            raise RolloutsError(f"workspace is not initialized: {resolved_workspace.root_path}")
-
-        snapshots = list_snapshots(
-            connection,
-            workspace_id=workspace_record.id,
+            workspace=workspace,
             session_id=session_id,
             message_id=message_id,
-        )
-        if not snapshots:
-            raise _missing_snapshot_error(
-                workspace=workspace_record.root_path,
-                session_id=session_id,
-                message_id=message_id,
-            )
-
-        workspace_record, created_remote = _ensure_workspace_remote(
-            connection=connection,
-            workspace_record=workspace_record,
+            push_all=push_all,
             create_remote=create_remote,
         )
 
-        remote_url = workspace_record.remote_url
-        if remote_url is None:
-            raise RuntimeError("workspace remote disappeared during push")
-
-        pushed_count, skipped_count = _push_snapshot_batch(
-            store_path=workspace_record.store_path,
-            remote_url=remote_url,
-            snapshots=snapshots,
+        return _push_workspace_batches(
+            connection=connection,
+            workspace_batches=workspace_batches,
+            create_remote=create_remote,
+            on_workspace_pushed=on_workspace_pushed,
             on_snapshot_pushed=on_snapshot_pushed,
-        )
-        if on_workspace_pushed is not None:
-            on_workspace_pushed(workspace_record)
-
-        return PushResult(
-            pushed_snapshots=pushed_count,
-            skipped_snapshots=skipped_count,
-            workspace_count=1,
-            created_remotes=1 if created_remote else 0,
         )
 
 
@@ -145,58 +105,17 @@ def get_push_scope_counts(
     ensure_app_home(paths)
     with connect(paths) as connection:
         initialize_db(connection)
-
-        if push_all:
-            workspaces = list_workspaces(connection, only_with_remote=not create_remote)
-            if not workspaces:
-                if create_remote:
-                    raise RolloutsError("no registered workspaces found")
-                raise RolloutsError("no workspaces with configured remotes")
-
-            workspace_count = 0
-            snapshot_count = 0
-            for workspace_record in workspaces:
-                snapshots = list_snapshots(connection, workspace_id=workspace_record.id)
-                if not snapshots:
-                    continue
-                workspace_count += 1
-                snapshot_count += len(snapshots)
-
-            if workspace_count == 0:
-                if create_remote:
-                    raise RolloutsError("no snapshots found for registered workspaces")
-                raise RolloutsError("no snapshots found for workspaces with configured remotes")
-            return PushScopeCounts(
-                workspace_count=workspace_count,
-                snapshot_count=snapshot_count,
-            )
-
-        workspace_path = workspace.resolve(strict=False)
-        resolved_workspace = resolve_workspace_source(workspace)
-        workspace_record = find_workspace(
+        workspace_batches = _resolve_push_scope(
             connection=connection,
-            workspace_path=workspace_path,
-            resolved_root_path=resolved_workspace.root_path,
-        )
-        if workspace_record is None:
-            raise RolloutsError(f"workspace is not initialized: {resolved_workspace.root_path}")
-
-        snapshots = list_snapshots(
-            connection,
-            workspace_id=workspace_record.id,
+            workspace=workspace,
             session_id=session_id,
             message_id=message_id,
+            push_all=push_all,
+            create_remote=create_remote,
         )
-        if not snapshots:
-            raise _missing_snapshot_error(
-                workspace=workspace_record.root_path,
-                session_id=session_id,
-                message_id=message_id,
-            )
-
         return PushScopeCounts(
-            workspace_count=1,
-            snapshot_count=len(snapshots),
+            workspace_count=len(workspace_batches),
+            snapshot_count=sum(len(batch.snapshots) for batch in workspace_batches),
         )
 
 
@@ -214,10 +133,72 @@ def validate_push_args(
         raise RolloutsError("--all cannot be combined with --session or --message")
 
 
-def _push_all_workspaces(
+def _resolve_push_scope(
     *,
     connection: sqlite3.Connection,
-    workspace_records: list[WorkspaceRecord],
+    workspace: Path,
+    session_id: str | None,
+    message_id: str | None,
+    push_all: bool,
+    create_remote: bool,
+) -> list[PushWorkspaceBatch]:
+    if push_all:
+        workspaces = list_workspaces(connection, only_with_remote=not create_remote)
+        if not workspaces:
+            if create_remote:
+                raise RolloutsError("no registered workspaces found")
+            raise RolloutsError("no workspaces with configured remotes")
+
+        workspace_batches = [
+            PushWorkspaceBatch(
+                workspace_record=workspace_record,
+                snapshots=snapshots,
+            )
+            for workspace_record in workspaces
+            if (snapshots := list_snapshots(connection, workspace_id=workspace_record.id))
+        ]
+        if not workspace_batches:
+            if create_remote:
+                raise RolloutsError("no snapshots found for registered workspaces")
+            raise RolloutsError("no snapshots found for workspaces with configured remotes")
+
+        return workspace_batches
+
+    workspace_path = workspace.resolve(strict=False)
+    resolved_workspace = resolve_workspace_source(workspace)
+    workspace_record = find_workspace(
+        connection=connection,
+        workspace_path=workspace_path,
+        resolved_root_path=resolved_workspace.root_path,
+    )
+    if workspace_record is None:
+        raise RolloutsError(f"workspace is not initialized: {resolved_workspace.root_path}")
+
+    snapshots = list_snapshots(
+        connection,
+        workspace_id=workspace_record.id,
+        session_id=session_id,
+        message_id=message_id,
+    )
+    if not snapshots:
+        raise _missing_snapshot_error(
+            workspace=workspace_record.root_path,
+            session_id=session_id,
+            message_id=message_id,
+        )
+
+    return [
+        PushWorkspaceBatch(
+            workspace_record=workspace_record,
+            snapshots=snapshots,
+        )
+    ]
+
+
+def _push_workspace_batches(
+    *,
+    connection: sqlite3.Connection,
+    workspace_batches: list[PushWorkspaceBatch],
     create_remote: bool,
     on_workspace_pushed: WorkspaceProgressCallback | None,
     on_snapshot_pushed: SnapshotProgressCallback | None,
@@ -227,11 +208,8 @@ def _push_all_workspaces(
     workspace_count = 0
     created_remotes = 0
 
-    for workspace_record in workspace_records:
-        snapshots = list_snapshots(connection, workspace_id=workspace_record.id)
-        if not snapshots:
-            continue
-
+    for workspace_batch in workspace_batches:
+        workspace_record = workspace_batch.workspace_record
         workspace_record, created_remote = _ensure_workspace_remote(
             connection=connection,
             workspace_record=workspace_record,
@@ -244,7 +222,7 @@ def _push_all_workspaces(
         pushed_count, skipped_count = _push_snapshot_batch(
             store_path=workspace_record.store_path,
             remote_url=remote_url,
-            snapshots=snapshots,
+            snapshots=workspace_batch.snapshots,
             on_snapshot_pushed=on_snapshot_pushed,
         )
 
@@ -254,11 +232,6 @@ def _push_all_workspaces(
         created_remotes += 1 if created_remote else 0
         if on_workspace_pushed is not None:
             on_workspace_pushed(workspace_record)
-
-    if workspace_count == 0:
-        if create_remote:
-            raise RolloutsError("no snapshots found for registered workspaces")
-        raise RolloutsError("no snapshots found for workspaces with configured remotes")
 
     return PushResult(
         pushed_snapshots=pushed_total,
