@@ -239,16 +239,21 @@ rollouts hf push \
 
 The `hf push` command:
 
-- uses the same session payload shape as `rollouts export`
+- pushes all stored snapshots to their archive remotes before syncing the dataset
+- auto-creates and stores missing GitHub archive repos for workspaces in scope
 - uploads all Rollouts-tracked sessions to `train.jsonl` in a Hugging Face dataset repo
 - uploads a `README.md` dataset card with YAML config that maps the `train` split to `train.jsonl`
 - creates the dataset repo if it does not already exist
-- updates rows with matching `session_id`s and appends rows for new `session_id`s
+- appends a new row for each new or changed session export
+- preserves older session rows so past batch states remain visible
+- increments `batch_id` only when there are new or changed session rows to append
+- exports session rows after the snapshot push, so `metadata.remote_url` reflects the stored archive repo
 - defaults to creating a public dataset; pass `--private` to create a private one
 - uses Hugging Face's existing authentication sources:
   - `HF_TOKEN`, if set
   - otherwise the token saved by `hf auth login`
 - if `--name` does not include a namespace, uses your authenticated Hugging Face username
+- requires `rollouts remote defaults set` if any tracked workspace still needs an auto-created archive repo
 
 After pushing, the dataset should load with:
 
@@ -257,6 +262,15 @@ from datasets import load_dataset
 
 dataset = load_dataset("username/dataset-name", split="train")
 ```
+
+Each HF dataset row has these top-level fields:
+
+- `batch_id`
+- `session_id`
+- `agent`
+- `exported_at`
+- `session`
+- `metadata`
 
 Example export shape:
 

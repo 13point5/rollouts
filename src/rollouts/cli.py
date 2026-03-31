@@ -10,6 +10,7 @@ from rollouts.commands.delete import delete_data, validate_delete_args
 from rollouts.commands.export import export_opencode_session, export_opencode_sessions_jsonl
 from rollouts.commands.hf import push_opencode_exports_to_hf
 from rollouts.commands.push import (
+    PushResult,
     get_push_scope_counts,
     push_snapshots,
     validate_push_args,
@@ -288,52 +289,13 @@ def push(
             push_all=push_all,
             create_remote=create_remote,
         )
-        scope_counts = get_push_scope_counts(
+        result, remote_urls = _push_snapshots_with_progress(
             workspace=workspace,
             session_id=session_id,
             message_id=message_id,
             push_all=push_all,
             create_remote=create_remote,
         )
-        remote_urls: list[str] = []
-        seen_remote_urls: set[str] = set()
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-            TimeElapsedColumn(),
-            console=output_console,
-        ) as progress:
-            snapshot_task_id = progress.add_task(
-                "Pushing snapshots",
-                total=scope_counts.snapshot_count,
-            )
-            workspace_task_id = progress.add_task(
-                "Pushing workspaces",
-                total=scope_counts.workspace_count,
-            )
-
-            def on_workspace_pushed(workspace_record: WorkspaceRecord) -> None:
-                progress.update(workspace_task_id, advance=1)
-                if workspace_record.remote_url is not None:
-                    remote_url = get_github_repo_web_url(workspace_record.remote_url)
-                    if remote_url not in seen_remote_urls:
-                        seen_remote_urls.add(remote_url)
-                        remote_urls.append(remote_url)
-
-            def on_snapshot_pushed(snapshot_record: SnapshotRecord) -> None:
-                del snapshot_record
-                progress.update(snapshot_task_id, advance=1)
-
-            result = push_snapshots(
-                workspace=workspace,
-                session_id=session_id,
-                message_id=message_id,
-                push_all=push_all,
-                create_remote=create_remote,
-                on_workspace_pushed=on_workspace_pushed,
-                on_snapshot_pushed=on_snapshot_pushed,
-            )
     except RolloutsError as error:
         error_console.print(f"[red]Error:[/red] {error}")
         raise typer.Exit(code=1) from error
@@ -512,16 +474,38 @@ def hf_push(
         raise typer.Exit(code=1)
 
     try:
-        result = push_opencode_exports_to_hf(name=name, private=private)
+        snapshot_push_result, remote_urls = _push_snapshots_with_progress(
+            workspace=Path("."),
+            session_id=None,
+            message_id=None,
+            push_all=True,
+            create_remote=True,
+        )
+        output_console.print("Syncing Hugging Face dataset...")
+        result = push_opencode_exports_to_hf(
+            name=name,
+            private=private,
+            snapshot_push_result=snapshot_push_result,
+        )
     except RolloutsError as error:
         error_console.print(f"[red]Error:[/red] {error}")
         raise typer.Exit(code=1) from error
 
     output_console.print("[green]Synced dataset[/green]")
     output_console.print(f"repo: {result.repo_id}")
+    output_console.print(f"pushed snapshots: {result.pushed_snapshots}")
+    output_console.print(f"skipped snapshots: {result.skipped_snapshots}")
+    output_console.print(f"created remotes: {result.created_remotes}")
+    output_console.print(f"batch: {result.batch_id if result.batch_id is not None else 'none'}")
     output_console.print(f"added sessions: {result.added_sessions}")
     output_console.print(f"updated sessions: {result.updated_sessions}")
-    output_console.print(f"total sessions: {result.total_sessions}")
+    output_console.print(f"total rows: {result.total_rows}")
+    if remote_urls:
+        output_console.print("")
+        output_console.print("Archive remotes")
+        for remote_url in remote_urls:
+            output_console.print(f"[link={remote_url}]{remote_url}[/link]")
+        output_console.print("")
     output_console.print(f"[link={result.repo_url}]{result.repo_url}[/link]")
 
 
@@ -551,3 +535,61 @@ def _build_delete_confirmation(
         f"Delete the snapshot for session {session_id!r} and message {message_id!r} in "
         f"{workspace.resolve(strict=False)}? This cannot be undone."
     )
+
+
+def _push_snapshots_with_progress(
+    *,
+    workspace: Path,
+    session_id: str | None,
+    message_id: str | None,
+    push_all: bool,
+    create_remote: bool,
+) -> tuple[PushResult, list[str]]:
+    scope_counts = get_push_scope_counts(
+        workspace=workspace,
+        session_id=session_id,
+        message_id=message_id,
+        push_all=push_all,
+        create_remote=create_remote,
+    )
+    remote_urls: list[str] = []
+    seen_remote_urls: set[str] = set()
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        console=output_console,
+    ) as progress:
+        snapshot_task_id = progress.add_task(
+            "Pushing snapshots",
+            total=scope_counts.snapshot_count,
+        )
+        workspace_task_id = progress.add_task(
+            "Pushing workspaces",
+            total=scope_counts.workspace_count,
+        )
+
+        def on_workspace_pushed(workspace_record: WorkspaceRecord) -> None:
+            progress.update(workspace_task_id, advance=1)
+            if workspace_record.remote_url is not None:
+                remote_url = get_github_repo_web_url(workspace_record.remote_url)
+                if remote_url not in seen_remote_urls:
+                    seen_remote_urls.add(remote_url)
+                    remote_urls.append(remote_url)
+
+        def on_snapshot_pushed(snapshot_record: SnapshotRecord) -> None:
+            del snapshot_record
+            progress.update(snapshot_task_id, advance=1)
+
+        result = push_snapshots(
+            workspace=workspace,
+            session_id=session_id,
+            message_id=message_id,
+            push_all=push_all,
+            create_remote=create_remote,
+            on_workspace_pushed=on_workspace_pushed,
+            on_snapshot_pushed=on_snapshot_pushed,
+        )
+
+    return result, remote_urls
