@@ -1,6 +1,6 @@
 # Rollouts
 
-A CLI for capturing agent rollouts and codebase snapshots at every turn. This data can be used for SFT, RL, and Continual Learning.
+A CLI to get training data from your own coding agents. Track rollouts and codebase snapshots at every turn. The data can be used for SFT, RL, and Continual Learning.
 
 ## Current status
 

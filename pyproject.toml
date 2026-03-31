@@ -1,7 +1,7 @@
 [project]
 name = "rollouts"
-dynamic = ["version"]
-description = "CLI for capturing and restoring agent rollout workspace states"
+version = "0.1.0"
+description = "A CLI to get training data from your own coding agents. Track rollouts and codebase snapshots at every turn. The data can be used for SFT, RL, and Continual Learning."
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 license = { text = "MIT" }
@@ -28,9 +28,6 @@ rollouts = "rollouts.cli:app"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.hatch.version]
-path = "src/rollouts/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rollouts"]
