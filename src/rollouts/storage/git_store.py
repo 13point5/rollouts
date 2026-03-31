@@ -118,6 +118,11 @@ def build_snapshot_tag_ref(*, session_id: str, message_id: str) -> str:
     return f"refs/tags/rollouts/session/{session_hash}/message/{message_hash}"
 
 
+def snapshot_tag_exists_on_remote(*, remote_url: str, session_id: str, message_id: str) -> bool:
+    tag_ref = build_snapshot_tag_ref(session_id=session_id, message_id=message_id)
+    return _remote_ref_exists(remote_url=remote_url, ref_name=tag_ref)
+
+
 def push_snapshot_tag(
     *,
     store_path: Path,

@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 
 from rollouts.commands.delete import delete_data, validate_delete_args
+from rollouts.commands.export import export_opencode_session
 from rollouts.commands.push import (
     get_push_workspace_count,
     push_snapshots,
@@ -334,6 +335,44 @@ def push(
         output_console.print("Remote URLs")
         for remote_url in remote_urls:
             output_console.print(f"[link={remote_url}]{remote_url}[/link]")
+
+
+@app.command()
+def export(
+    agent: str = typer.Option(
+        ...,
+        "--agent",
+        help="Agent source to export. Currently only `opencode` is supported.",
+    ),
+    session_id: str = typer.Option(..., "--session", help="Session identifier."),
+    output_path: Path = typer.Option(
+        ...,
+        "--out",
+        resolve_path=True,
+        help="Output JSON file path.",
+    ),
+) -> None:
+    """Export agent session data for downstream use."""
+
+    if agent != "opencode":
+        error_console.print(f"[red]Error:[/red] unsupported agent: {agent}")
+        raise typer.Exit(code=1)
+
+    try:
+        result = export_opencode_session(
+            session_id=session_id,
+            output_path=output_path,
+        )
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output_console.print("[green]Exported session[/green]")
+    output_console.print(f"agent: {agent}")
+    output_console.print(f"session: {result.session_id}")
+    output_console.print(f"title: {result.title}")
+    output_console.print(f"messages: {result.message_count}")
+    output_console.print(f"output: {result.output_path}")
 
 
 @app.command()

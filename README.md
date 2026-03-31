@@ -12,11 +12,12 @@ Current prototype:
 - `rollouts restore [workspace] --session --message --dest`
 - `rollouts restore --repo <repo> --session --message --dest`
 - `rollouts delete [workspace] [--session] [--message]` and `rollouts delete --all`
+- `rollouts export --agent opencode --session <session-id> --out <file>`
 - `rollouts remote set [workspace] --url <repo>`
 - `rollouts remote clear [workspace]` and `rollouts remote clear --all`
 - `rollouts remote defaults set --owner <owner> [--prefix <prefix>]`
 - `rollouts push [workspace] [--session] [--message]` and `rollouts push --all`
-- SQLite bootstrap with a `workspaces` table
+- SQLite bootstrap with `workspaces`, `snapshots`, and `remote_defaults` tables
 - one bare Git store per registered workspace
 
 ## Coming soon
@@ -193,6 +194,24 @@ The `delete` command:
 - with `--all`, deletes the entire Rollouts app home, including the SQLite DB and all workspace stores
 - requires `--session` when `--message` is provided
 - does not allow combining `--all` with `--session` or `--message`
+
+Export one OpenCode session as raw JSON:
+
+```bash
+rollouts export \
+  --agent opencode \
+  --session ses_123 \
+  --out /tmp/opencode-session.json
+```
+
+The `export` command:
+
+- uses `opencode export <sessionID>` under the hood
+- requires the `opencode` CLI to be installed
+- currently supports `--agent opencode`
+- requires `--session`
+- writes the raw JSON returned by `opencode export` unchanged
+- keeps the file compatible with `opencode import`
 
 The current on-disk layout is:
 
