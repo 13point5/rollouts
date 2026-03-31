@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 
 from rollouts.commands.delete import delete_data, validate_delete_args
-from rollouts.commands.export import export_opencode_session
+from rollouts.commands.export import export_opencode_session, export_opencode_sessions_jsonl
 from rollouts.commands.push import (
     get_push_scope_counts,
     push_snapshots,
@@ -353,12 +353,21 @@ def export(
         "--agent",
         help="Agent source to export. Currently only `opencode` is supported.",
     ),
-    session_id: str = typer.Option(..., "--session", help="Session identifier."),
+    session_id: str | None = typer.Option(
+        None,
+        "--session",
+        help="Session identifier. Required unless --all is set.",
+    ),
+    export_all: bool = typer.Option(
+        False,
+        "--all",
+        help="Export all Rollouts-tracked sessions as JSONL.",
+    ),
     output_path: Path = typer.Option(
         ...,
         "--out",
         resolve_path=True,
-        help="Output JSON file path.",
+        help="Output JSON or JSONL file path.",
     ),
 ) -> None:
     """Export agent session data for downstream use."""
@@ -366,12 +375,24 @@ def export(
     if agent != "opencode":
         error_console.print(f"[red]Error:[/red] unsupported agent: {agent}")
         raise typer.Exit(code=1)
+    if export_all and session_id is not None:
+        error_console.print("[red]Error:[/red] cannot use --session with --all")
+        raise typer.Exit(code=1)
+    if not export_all and session_id is None:
+        error_console.print("[red]Error:[/red] --session is required unless --all is set")
+        raise typer.Exit(code=1)
 
     try:
-        result = export_opencode_session(
-            session_id=session_id,
-            output_path=output_path,
-        )
+        if export_all:
+            result = export_opencode_sessions_jsonl(output_path=output_path)
+            output_console.print(f"[green]Exported sessions[/green] {result.session_count}")
+            output_console.print("format: jsonl")
+            output_console.print(f"output: {result.output_path}")
+            return
+
+        if session_id is None:
+            raise RuntimeError("session_id should be present when --all is not set")
+        result = export_opencode_session(session_id=session_id, output_path=output_path)
     except RolloutsError as error:
         error_console.print(f"[red]Error:[/red] {error}")
         raise typer.Exit(code=1) from error

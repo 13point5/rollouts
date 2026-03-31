@@ -13,6 +13,7 @@ Current prototype:
 - `rollouts restore --repo <repo> --session --message --dest`
 - `rollouts delete [workspace] [--session] [--message]` and `rollouts delete --all`
 - `rollouts export --agent opencode --session <session-id> --out <file>`
+- `rollouts export --agent opencode --all --out <file.jsonl>`
 - `rollouts remote set [workspace] --url <repo>`
 - `rollouts remote clear [workspace]` and `rollouts remote clear --all`
 - `rollouts remote defaults set --owner <owner> [--prefix <prefix>]`
@@ -210,13 +211,28 @@ The `export` command:
 - uses `opencode export <sessionID>` under the hood
 - requires the `opencode` CLI to be installed
 - currently supports `--agent opencode`
-- requires `--session`
+- requires `--session` unless `--all` is set
 - writes an envelope object with:
   - top-level `session_id`, `agent`, and `exported_at`
   - nested `session`, which contains the raw JSON returned by `opencode export`
   - top-level `metadata`, which is either `null` or an object with `remote_url`
 - sets `metadata` to `null` when Rollouts has no stored workspace for the session
 - sets `metadata.remote_url` to `null` when the session's workspace exists but has no configured remote
+
+Export all Rollouts-tracked sessions as JSONL:
+
+```bash
+rollouts export \
+  --agent opencode \
+  --all \
+  --out /tmp/opencode-sessions.jsonl
+```
+
+With `--all`, the command:
+
+- looks up all distinct tracked `session_id`s from the Rollouts database
+- exports one session record per line using the same payload shape as single-session export
+- writes newline-delimited JSON to the output file
 
 Example export shape:
 

@@ -462,6 +462,17 @@ def get_workspace_for_session(
     return workspaces[0]
 
 
+def list_session_ids(connection: sqlite3.Connection) -> list[str]:
+    rows = connection.execute(
+        """
+        SELECT DISTINCT session_id
+        FROM snapshots
+        ORDER BY session_id ASC
+        """
+    ).fetchall()
+    return [row["session_id"] for row in rows]
+
+
 def list_workspaces(
     connection: sqlite3.Connection,
     *,
