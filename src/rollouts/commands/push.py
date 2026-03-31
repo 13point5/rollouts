@@ -29,7 +29,14 @@ class PushResult:
     created_remotes: int
 
 
+@dataclass(frozen=True)
+class PushScopeCounts:
+    workspace_count: int
+    snapshot_count: int
+
+
 WorkspaceProgressCallback = Callable[[WorkspaceRecord], None]
+SnapshotProgressCallback = Callable[[SnapshotRecord], None]
 
 
 def push_snapshots(
@@ -40,6 +47,7 @@ def push_snapshots(
     push_all: bool,
     create_remote: bool,
     on_workspace_pushed: WorkspaceProgressCallback | None = None,
+    on_snapshot_pushed: SnapshotProgressCallback | None = None,
 ) -> PushResult:
     validate_push_args(
         session_id=session_id,
@@ -59,11 +67,13 @@ def push_snapshots(
                 if create_remote:
                     raise RolloutsError("no registered workspaces found")
                 raise RolloutsError("no workspaces with configured remotes")
+
             return _push_all_workspaces(
                 connection=connection,
                 workspace_records=workspaces,
                 create_remote=create_remote,
                 on_workspace_pushed=on_workspace_pushed,
+                on_snapshot_pushed=on_snapshot_pushed,
             )
 
         workspace_path = workspace.resolve(strict=False)
@@ -94,6 +104,7 @@ def push_snapshots(
             workspace_record=workspace_record,
             create_remote=create_remote,
         )
+
         remote_url = workspace_record.remote_url
         if remote_url is None:
             raise RuntimeError("workspace remote disappeared during push")
@@ -102,9 +113,11 @@ def push_snapshots(
             store_path=workspace_record.store_path,
             remote_url=remote_url,
             snapshots=snapshots,
+            on_snapshot_pushed=on_snapshot_pushed,
         )
         if on_workspace_pushed is not None:
             on_workspace_pushed(workspace_record)
+
         return PushResult(
             pushed_snapshots=pushed_count,
             skipped_snapshots=skipped_count,
@@ -113,14 +126,14 @@ def push_snapshots(
         )
 
 
-def get_push_workspace_count(
+def get_push_scope_counts(
     *,
     workspace: Path,
     session_id: str | None,
     message_id: str | None,
     push_all: bool,
     create_remote: bool,
-) -> int:
+) -> PushScopeCounts:
     validate_push_args(
         session_id=session_id,
         message_id=message_id,
@@ -140,16 +153,23 @@ def get_push_workspace_count(
                     raise RolloutsError("no registered workspaces found")
                 raise RolloutsError("no workspaces with configured remotes")
 
-            count = sum(
-                1
-                for workspace_record in workspaces
-                if list_snapshots(connection, workspace_id=workspace_record.id)
-            )
-            if count == 0:
+            workspace_count = 0
+            snapshot_count = 0
+            for workspace_record in workspaces:
+                snapshots = list_snapshots(connection, workspace_id=workspace_record.id)
+                if not snapshots:
+                    continue
+                workspace_count += 1
+                snapshot_count += len(snapshots)
+
+            if workspace_count == 0:
                 if create_remote:
                     raise RolloutsError("no snapshots found for registered workspaces")
                 raise RolloutsError("no snapshots found for workspaces with configured remotes")
-            return count
+            return PushScopeCounts(
+                workspace_count=workspace_count,
+                snapshot_count=snapshot_count,
+            )
 
         workspace_path = workspace.resolve(strict=False)
         resolved_workspace = resolve_workspace_source(workspace)
@@ -174,7 +194,10 @@ def get_push_workspace_count(
                 message_id=message_id,
             )
 
-        return 1
+        return PushScopeCounts(
+            workspace_count=1,
+            snapshot_count=len(snapshots),
+        )
 
 
 def validate_push_args(
@@ -197,6 +220,7 @@ def _push_all_workspaces(
     workspace_records: list[WorkspaceRecord],
     create_remote: bool,
     on_workspace_pushed: WorkspaceProgressCallback | None,
+    on_snapshot_pushed: SnapshotProgressCallback | None,
 ) -> PushResult:
     pushed_total = 0
     skipped_total = 0
@@ -216,11 +240,14 @@ def _push_all_workspaces(
         remote_url = workspace_record.remote_url
         if remote_url is None:
             raise RuntimeError("workspace remote disappeared during batch push")
+
         pushed_count, skipped_count = _push_snapshot_batch(
             store_path=workspace_record.store_path,
             remote_url=remote_url,
             snapshots=snapshots,
+            on_snapshot_pushed=on_snapshot_pushed,
         )
+
         pushed_total += pushed_count
         skipped_total += skipped_count
         workspace_count += 1
@@ -246,6 +273,7 @@ def _push_snapshot_batch(
     store_path: Path,
     remote_url: str,
     snapshots: list[SnapshotRecord],
+    on_snapshot_pushed: SnapshotProgressCallback | None,
 ) -> tuple[int, int]:
     pushed_count = 0
     skipped_count = 0
@@ -260,6 +288,8 @@ def _push_snapshot_batch(
             pushed_count += 1
         else:
             skipped_count += 1
+        if on_snapshot_pushed is not None:
+            on_snapshot_pushed(snapshot)
 
     return pushed_count, skipped_count
 

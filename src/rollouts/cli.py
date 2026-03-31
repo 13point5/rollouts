@@ -9,7 +9,7 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rollouts.commands.delete import delete_data, validate_delete_args
 from rollouts.commands.export import export_opencode_session
 from rollouts.commands.push import (
-    get_push_workspace_count,
+    get_push_scope_counts,
     push_snapshots,
     validate_push_args,
 )
@@ -23,7 +23,7 @@ from rollouts.commands.restore import restore_remote_workspace, restore_workspac
 from rollouts.commands.snapshot import snapshot_workspace
 from rollouts.errors import RolloutsError
 from rollouts.github import get_github_repo_web_url
-from rollouts.models import WorkspaceRecord
+from rollouts.models import SnapshotRecord, WorkspaceRecord
 
 app = typer.Typer(no_args_is_help=True, help="Capture and restore agent rollout workspace states.")
 remote_app = typer.Typer(no_args_is_help=True, help="Configure remote archive repositories.")
@@ -285,7 +285,7 @@ def push(
             push_all=push_all,
             create_remote=create_remote,
         )
-        workspace_total = get_push_workspace_count(
+        scope_counts = get_push_scope_counts(
             workspace=workspace,
             session_id=session_id,
             message_id=message_id,
@@ -301,18 +301,26 @@ def push(
             TimeElapsedColumn(),
             console=output_console,
         ) as progress:
-            task_id = progress.add_task(
+            snapshot_task_id = progress.add_task(
+                "Pushing snapshots",
+                total=scope_counts.snapshot_count,
+            )
+            workspace_task_id = progress.add_task(
                 "Pushing workspaces",
-                total=workspace_total,
+                total=scope_counts.workspace_count,
             )
 
             def on_workspace_pushed(workspace_record: WorkspaceRecord) -> None:
-                progress.update(task_id, advance=1)
+                progress.update(workspace_task_id, advance=1)
                 if workspace_record.remote_url is not None:
                     remote_url = get_github_repo_web_url(workspace_record.remote_url)
                     if remote_url not in seen_remote_urls:
                         seen_remote_urls.add(remote_url)
                         remote_urls.append(remote_url)
+
+            def on_snapshot_pushed(snapshot_record: SnapshotRecord) -> None:
+                del snapshot_record
+                progress.update(snapshot_task_id, advance=1)
 
             result = push_snapshots(
                 workspace=workspace,
@@ -321,6 +329,7 @@ def push(
                 push_all=push_all,
                 create_remote=create_remote,
                 on_workspace_pushed=on_workspace_pushed,
+                on_snapshot_pushed=on_snapshot_pushed,
             )
     except RolloutsError as error:
         error_console.print(f"[red]Error:[/red] {error}")
