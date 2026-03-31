@@ -9,6 +9,7 @@ authors = [
   { name = "13point5" }
 ]
 dependencies = [
+  "huggingface-hub>=0.34.4",
   "pydantic>=2.11.0",
   "rich>=14.0.0",
   "typer>=0.16.0",

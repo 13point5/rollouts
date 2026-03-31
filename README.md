@@ -14,18 +14,13 @@ Current prototype:
 - `rollouts delete [workspace] [--session] [--message]` and `rollouts delete --all`
 - `rollouts export --agent opencode --session <session-id> --out <file>`
 - `rollouts export --agent opencode --all --out <file.jsonl>`
+- `rollouts hf push --agent opencode --name <dataset>`
 - `rollouts remote set [workspace] --url <repo>`
 - `rollouts remote clear [workspace]` and `rollouts remote clear --all`
 - `rollouts remote defaults set --owner <owner> [--prefix <prefix>]`
 - `rollouts push [workspace] [--session] [--message]` and `rollouts push --all`
 - SQLite bootstrap with `workspaces`, `snapshots`, and `remote_defaults` tables
 - one bare Git store per registered workspace
-
-## Coming soon
-
-The current CLI focuses on snapshot storage, restore, and archive push/pull primitives. The next major piece is first-class rollout tracking from agent runtimes like OpenCode, Codex, Claude Code, and similar coding agents.
-
-We also plan to add commands for uploading collected trajectories directly to Hugging Face datasets for downstream analysis, training, and continual learning workflows.
 
 ## Install
 
@@ -234,13 +229,42 @@ With `--all`, the command:
 - exports one session record per line using the same payload shape as single-session export
 - writes newline-delimited JSON to the output file
 
+Upload tracked OpenCode sessions to a Hugging Face dataset:
+
+```bash
+rollouts hf push \
+  --agent opencode \
+  --name your-dataset-name
+```
+
+The `hf push` command:
+
+- uses the same session payload shape as `rollouts export`
+- uploads all Rollouts-tracked sessions to `train.jsonl` in a Hugging Face dataset repo
+- uploads a `README.md` dataset card with YAML config that maps the `train` split to `train.jsonl`
+- creates the dataset repo if it does not already exist
+- updates rows with matching `session_id`s and appends rows for new `session_id`s
+- defaults to creating a public dataset; pass `--private` to create a private one
+- uses Hugging Face's existing authentication sources:
+  - `HF_TOKEN`, if set
+  - otherwise the token saved by `hf auth login`
+- if `--name` does not include a namespace, uses your authenticated Hugging Face username
+
+After pushing, the dataset should load with:
+
+```python
+from datasets import load_dataset
+
+dataset = load_dataset("username/dataset-name", split="train")
+```
+
 Example export shape:
 
 ```json
 {
   "session_id": "ses_123",
   "agent": "opencode",
-  "exported_at": "2026-03-30T12:34:56Z",
+  "exported_at": "2026-03-30T12:34:56.000Z",
   "session": {
     "info": {
       "id": "ses_123"

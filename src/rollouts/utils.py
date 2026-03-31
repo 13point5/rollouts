@@ -8,4 +8,4 @@ def utc_now() -> datetime:
 
 
 def utc_now_isoformat() -> str:
-    return utc_now().isoformat().replace("+00:00", "Z")
+    return utc_now().isoformat(timespec="milliseconds").replace("+00:00", "Z")

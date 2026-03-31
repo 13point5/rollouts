@@ -8,6 +8,7 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 
 from rollouts.commands.delete import delete_data, validate_delete_args
 from rollouts.commands.export import export_opencode_session, export_opencode_sessions_jsonl
+from rollouts.commands.hf import push_opencode_exports_to_hf
 from rollouts.commands.push import (
     get_push_scope_counts,
     push_snapshots,
@@ -31,8 +32,10 @@ remote_defaults_app = typer.Typer(
     no_args_is_help=True,
     help="Configure default GitHub archive repo creation settings.",
 )
+hf_app = typer.Typer(no_args_is_help=True, help="Upload rollout exports to Hugging Face datasets.")
 app.add_typer(remote_app, name="remote")
 remote_app.add_typer(remote_defaults_app, name="defaults")
+app.add_typer(hf_app, name="hf")
 output_console = Console()
 error_console = Console(stderr=True)
 
@@ -479,6 +482,47 @@ def delete(
         output_console.print(f"session: {session_id}")
     if message_id is not None:
         output_console.print(f"message: {message_id}")
+
+
+@hf_app.command("push")
+def hf_push(
+    agent: str = typer.Option(
+        ...,
+        "--agent",
+        help="Agent source to upload. Currently only `opencode` is supported.",
+    ),
+    name: str = typer.Option(
+        ...,
+        "--name",
+        help=(
+            "Dataset repo name or repo id. "
+            "If no namespace is provided, your authenticated HF username is used."
+        ),
+    ),
+    private: bool = typer.Option(
+        False,
+        "--private/--public",
+        help="Create the dataset as private or public if it does not already exist.",
+    ),
+) -> None:
+    """Upload tracked session exports to a Hugging Face dataset."""
+
+    if agent != "opencode":
+        error_console.print(f"[red]Error:[/red] unsupported agent: {agent}")
+        raise typer.Exit(code=1)
+
+    try:
+        result = push_opencode_exports_to_hf(name=name, private=private)
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output_console.print("[green]Synced dataset[/green]")
+    output_console.print(f"repo: {result.repo_id}")
+    output_console.print(f"added sessions: {result.added_sessions}")
+    output_console.print(f"updated sessions: {result.updated_sessions}")
+    output_console.print(f"total sessions: {result.total_sessions}")
+    output_console.print(f"[link={result.repo_url}]{result.repo_url}[/link]")
 
 
 def _build_delete_confirmation(

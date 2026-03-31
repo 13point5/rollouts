@@ -85,21 +85,27 @@ def export_opencode_session(
     )
 
 
+def build_tracked_opencode_export_payloads() -> list[OpenCodeExportPayload]:
+    return [
+        build_opencode_export_payload(session_id=session_id)
+        for session_id in _list_tracked_session_ids()
+    ]
+
+
 def export_opencode_sessions_jsonl(*, output_path: Path) -> OpenCodeJsonlExportResult:
-    session_ids = _list_tracked_session_ids()
-    if not session_ids:
+    export_payloads = build_tracked_opencode_export_payloads()
+    if not export_payloads:
         raise RolloutsError("no tracked sessions found to export")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as output_file:
-        for session_id in session_ids:
-            export_data = build_opencode_export_payload(session_id=session_id)
+        for export_data in export_payloads:
             output_file.write(json.dumps(export_data.payload))
             output_file.write("\n")
 
     return OpenCodeJsonlExportResult(
         output_path=output_path,
-        session_count=len(session_ids),
+        session_count=len(export_payloads),
     )
 
 
