@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
+from rollouts.errors import RolloutsError
 from rollouts.models import ResolvedWorkspace, WorkspaceRecord
 from rollouts.paths import ensure_app_home, get_app_paths, workspace_store_path
 from rollouts.storage.db import (
@@ -14,6 +15,33 @@ from rollouts.storage.db import (
     update_workspace_root_path,
 )
 from rollouts.storage.git_store import initialize_bare_store, resolve_workspace_source
+
+
+def get_existing_workspace(
+    workspace: Path,
+    *,
+    ensure_home: bool = True,
+) -> WorkspaceRecord:
+    paths = get_app_paths()
+    if ensure_home:
+        ensure_app_home(paths)
+    elif not paths.db_path.exists():
+        raise RolloutsError("no rollouts data found")
+
+    workspace_path = workspace.resolve(strict=False)
+    resolved_workspace = resolve_workspace_source(workspace)
+
+    with connect(paths) as connection:
+        initialize_db(connection)
+        workspace_record = find_workspace(
+            connection=connection,
+            workspace_path=workspace_path,
+            resolved_root_path=resolved_workspace.root_path,
+        )
+        if workspace_record is None:
+            raise RolloutsError(f"workspace is not initialized: {resolved_workspace.root_path}")
+
+        return workspace_record
 
 
 def ensure_workspace(

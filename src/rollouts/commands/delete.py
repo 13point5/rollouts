@@ -12,11 +12,11 @@ from rollouts.storage.db import (
     connect,
     delete_snapshots,
     delete_workspace,
-    find_workspace,
     initialize_db,
     list_snapshots,
 )
-from rollouts.storage.git_store import delete_snapshot_ref, resolve_workspace_source
+from rollouts.storage.git_store import delete_snapshot_ref
+from rollouts.storage.workspace import get_existing_workspace
 
 
 @dataclass(frozen=True)
@@ -47,19 +47,11 @@ def delete_data(
     if not paths.db_path.exists():
         raise RolloutsError("no rollouts data found")
 
+    workspace_record = get_existing_workspace(workspace, ensure_home=False)
     workspace_path = workspace.resolve(strict=False)
-    resolved_workspace = resolve_workspace_source(workspace)
 
     with connect(paths) as connection:
         initialize_db(connection)
-        workspace_record = find_workspace(
-            connection=connection,
-            workspace_path=workspace_path,
-            resolved_root_path=resolved_workspace.root_path,
-        )
-        if workspace_record is None:
-            raise RolloutsError(f"workspace is not initialized: {resolved_workspace.root_path}")
-
         snapshots = _get_target_snapshots(
             connection=connection,
             workspace_id=workspace_record.id,

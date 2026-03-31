@@ -6,18 +6,13 @@ from rollouts.errors import RolloutsError
 from rollouts.github import normalize_github_repo_clone_url
 from rollouts.models import SnapshotRecord
 from rollouts.paths import ensure_app_home, get_app_paths
-from rollouts.storage.db import (
-    connect,
-    find_workspace,
-    get_snapshot_by_message,
-    initialize_db,
-)
+from rollouts.storage.db import connect, get_snapshot_by_message, initialize_db
 from rollouts.storage.git_store import (
     RemoteRestoreResult,
-    resolve_workspace_source,
     restore_remote_snapshot_to_destination,
     restore_snapshot_to_destination,
 )
+from rollouts.storage.workspace import get_existing_workspace
 
 
 def restore_workspace(
@@ -29,19 +24,10 @@ def restore_workspace(
 ) -> SnapshotRecord:
     paths = get_app_paths()
     ensure_app_home(paths)
-    workspace_path = workspace.resolve(strict=False)
-    resolved_workspace = resolve_workspace_source(workspace)
+    workspace_record = get_existing_workspace(workspace)
 
     with connect(paths) as connection:
         initialize_db(connection)
-        workspace_record = find_workspace(
-            connection=connection,
-            workspace_path=workspace_path,
-            resolved_root_path=resolved_workspace.root_path,
-        )
-        if workspace_record is None:
-            raise RolloutsError(f"workspace is not initialized: {resolved_workspace.root_path}")
-
         snapshot = get_snapshot_by_message(
             connection,
             workspace_id=workspace_record.id,

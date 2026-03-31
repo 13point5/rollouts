@@ -11,14 +11,14 @@ from rollouts.models import SnapshotRecord, WorkspaceRecord
 from rollouts.paths import ensure_app_home, get_app_paths
 from rollouts.storage.db import (
     connect,
-    find_workspace,
     get_remote_defaults,
     initialize_db,
     list_snapshots,
     list_workspaces,
     set_workspace_remote_url,
 )
-from rollouts.storage.git_store import push_snapshot_tag, resolve_workspace_source
+from rollouts.storage.git_store import push_snapshot_tag
+from rollouts.storage.workspace import get_existing_workspace
 
 
 @dataclass(frozen=True)
@@ -164,16 +164,7 @@ def _resolve_push_scope(
 
         return workspace_batches
 
-    workspace_path = workspace.resolve(strict=False)
-    resolved_workspace = resolve_workspace_source(workspace)
-    workspace_record = find_workspace(
-        connection=connection,
-        workspace_path=workspace_path,
-        resolved_root_path=resolved_workspace.root_path,
-    )
-    if workspace_record is None:
-        raise RolloutsError(f"workspace is not initialized: {resolved_workspace.root_path}")
-
+    workspace_record = get_existing_workspace(workspace)
     snapshots = list_snapshots(
         connection,
         workspace_id=workspace_record.id,

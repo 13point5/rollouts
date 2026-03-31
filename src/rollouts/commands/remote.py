@@ -10,13 +10,11 @@ from rollouts.storage.db import (
     clear_all_workspace_remote_urls,
     clear_workspace_remote_url,
     connect,
-    find_workspace,
     initialize_db,
     set_remote_defaults,
     set_workspace_remote_url,
 )
-from rollouts.storage.git_store import resolve_workspace_source
-from rollouts.storage.workspace import ensure_workspace
+from rollouts.storage.workspace import ensure_workspace, get_existing_workspace
 
 
 def set_workspace_remote(*, workspace: Path, remote_url: str) -> WorkspaceRecord:
@@ -67,21 +65,11 @@ def set_global_remote_defaults(
 
 
 def clear_workspace_remote(*, workspace: Path) -> WorkspaceRecord:
-    paths = get_app_paths()
-    ensure_app_home(paths)
-    workspace_path = workspace.resolve(strict=False)
-    resolved_workspace = resolve_workspace_source(workspace)
+    workspace_record = get_existing_workspace(workspace)
 
+    paths = get_app_paths()
     with connect(paths) as connection:
         initialize_db(connection)
-        workspace_record = find_workspace(
-            connection=connection,
-            workspace_path=workspace_path,
-            resolved_root_path=resolved_workspace.root_path,
-        )
-        if workspace_record is None:
-            raise RolloutsError(f"workspace is not initialized: {resolved_workspace.root_path}")
-
         return clear_workspace_remote_url(
             connection,
             workspace_id=workspace_record.id,
