@@ -212,7 +212,7 @@ The `export` command:
 - currently supports `--agent opencode`
 - requires `--session`
 - writes an envelope object with:
-  - top-level `schema_version`, `agent`, and `exported_at`
+  - top-level `session_id`, `agent`, and `exported_at`
   - nested `session`, which contains the raw JSON returned by `opencode export`
   - top-level `metadata`, which is either `null` or an object with `remote_url`
 - sets `metadata` to `null` when Rollouts has no stored workspace for the session
@@ -222,7 +222,7 @@ Example export shape:
 
 ```json
 {
-  "schema_version": 1,
+  "session_id": "ses_123",
   "agent": "opencode",
   "exported_at": "2026-03-30T12:34:56Z",
   "session": {

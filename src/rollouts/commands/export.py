@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,8 +10,6 @@ from rollouts.errors import RolloutsError
 from rollouts.paths import get_app_paths
 from rollouts.storage.db import connect, get_workspace_for_session, initialize_db
 from rollouts.utils import utc_now_isoformat
-
-EXPORT_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -30,32 +29,53 @@ class ParsedOpenCodeExport:
     message_count: int
 
 
-def export_opencode_session(
-    *,
-    session_id: str,
-    output_path: Path,
-) -> OpenCodeExportResult:
+@dataclass(frozen=True)
+class OpenCodeExportPayload:
+    payload: Mapping[str, object]
+    session_id: str
+    title: str
+    message_count: int
+    metadata: dict[str, str | None] | None
+
+
+def build_opencode_export_payload(*, session_id: str) -> OpenCodeExportPayload:
     raw_json = _run_opencode_export(session_id=session_id)
     parsed = _parse_opencode_export(raw_json)
     metadata = _get_rollouts_metadata(session_id=parsed.session_id)
 
-    export_payload = {
-        "schema_version": EXPORT_SCHEMA_VERSION,
+    payload = {
+        "session_id": parsed.session_id,
         "agent": "opencode",
         "exported_at": utc_now_isoformat(),
         "session": parsed.payload,
         "metadata": metadata,
     }
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(f"{json.dumps(export_payload, indent=2)}\n", encoding="utf-8")
-
-    return OpenCodeExportResult(
-        output_path=output_path,
+    return OpenCodeExportPayload(
+        payload=payload,
         session_id=parsed.session_id,
         title=parsed.title,
         message_count=parsed.message_count,
         metadata=metadata,
+    )
+
+
+def export_opencode_session(
+    *,
+    session_id: str,
+    output_path: Path,
+) -> OpenCodeExportResult:
+    export_data = build_opencode_export_payload(session_id=session_id)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(f"{json.dumps(export_data.payload, indent=2)}\n", encoding="utf-8")
+
+    return OpenCodeExportResult(
+        output_path=output_path,
+        session_id=export_data.session_id,
+        title=export_data.title,
+        message_count=export_data.message_count,
+        metadata=export_data.metadata,
     )
 
 
