@@ -372,6 +372,8 @@ def export(
     output_console.print(f"session: {result.session_id}")
     output_console.print(f"title: {result.title}")
     output_console.print(f"messages: {result.message_count}")
+    remote_url = None if result.metadata is None else result.metadata["remote_url"]
+    output_console.print(f"remote url: {remote_url if remote_url is not None else 'none'}")
     output_console.print(f"output: {result.output_path}")
 
 

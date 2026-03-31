@@ -5,10 +5,26 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from rollouts.errors import RolloutsError
+from rollouts.paths import get_app_paths
+from rollouts.storage.db import connect, get_workspace_for_session, initialize_db
+from rollouts.utils import utc_now_isoformat
+
+EXPORT_SCHEMA_VERSION = 1
+
 
 @dataclass(frozen=True)
 class OpenCodeExportResult:
     output_path: Path
+    session_id: str
+    title: str
+    message_count: int
+    metadata: dict[str, str | None] | None
+
+
+@dataclass(frozen=True)
+class ParsedOpenCodeExport:
+    payload: dict[str, object]
     session_id: str
     title: str
     message_count: int
@@ -19,23 +35,71 @@ def export_opencode_session(
     session_id: str,
     output_path: Path,
 ) -> OpenCodeExportResult:
-    raw_json = subprocess.run(
-        ["opencode", "export", session_id],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
+    raw_json = _run_opencode_export(session_id=session_id)
+    parsed = _parse_opencode_export(raw_json)
+    metadata = _get_rollouts_metadata(session_id=parsed.session_id)
 
-    payload = json.loads(raw_json)
-    info = payload["info"]
-    messages = payload["messages"]
+    export_payload = {
+        "schema_version": EXPORT_SCHEMA_VERSION,
+        "agent": "opencode",
+        "exported_at": utc_now_isoformat(),
+        "session": parsed.payload,
+        "metadata": metadata,
+    }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(raw_json, encoding="utf-8")
+    output_path.write_text(f"{json.dumps(export_payload, indent=2)}\n", encoding="utf-8")
 
     return OpenCodeExportResult(
         output_path=output_path,
-        session_id=info["id"],
-        title=info["title"],
+        session_id=parsed.session_id,
+        title=parsed.title,
+        message_count=parsed.message_count,
+        metadata=metadata,
+    )
+
+
+def _run_opencode_export(*, session_id: str) -> str:
+    try:
+        return subprocess.run(
+            ["opencode", "export", session_id],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except FileNotFoundError as error:
+        raise RolloutsError("opencode executable not found") from error
+    except subprocess.CalledProcessError as error:
+        message = error.stderr.strip() or error.stdout.strip() or "opencode export failed"
+        raise RolloutsError(message) from error
+
+
+def _parse_opencode_export(raw_json: str) -> ParsedOpenCodeExport:
+    payload = json.loads(raw_json)
+
+    info = payload["info"]
+    messages = payload["messages"]
+    parsed_session_id = info["id"]
+    title = info["title"]
+
+    return ParsedOpenCodeExport(
+        payload=payload,
+        session_id=parsed_session_id,
+        title=title,
         message_count=len(messages),
     )
+
+
+def _get_rollouts_metadata(*, session_id: str) -> dict[str, str | None] | None:
+    paths = get_app_paths()
+    if not paths.db_path.exists():
+        return None
+
+    with connect(paths) as connection:
+        initialize_db(connection)
+        workspace = get_workspace_for_session(connection, session_id=session_id)
+
+    if workspace is None:
+        return None
+
+    return {"remote_url": workspace.remote_url}

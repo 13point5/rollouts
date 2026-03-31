@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
-from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from rollouts.errors import RolloutsError
 from rollouts.models import AppPaths, RemoteDefaultsRecord, SnapshotRecord, WorkspaceRecord
+from rollouts.utils import utc_now
+
+
+class RolloutsConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> Literal[False]:
+        try:
+            return super().__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self.close()
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -30,6 +40,22 @@ CREATE TABLE IF NOT EXISTS snapshots (
   FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
 );
 
+CREATE INDEX IF NOT EXISTS snapshots_session_id_idx
+ON snapshots (session_id);
+
+CREATE TRIGGER IF NOT EXISTS snapshots_session_workspace_guard
+BEFORE INSERT ON snapshots
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1
+  FROM snapshots
+  WHERE session_id = NEW.session_id
+    AND workspace_id != NEW.workspace_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'session is already associated with a different workspace');
+END;
+
 CREATE TABLE IF NOT EXISTS remote_defaults (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   owner TEXT NOT NULL,
@@ -40,7 +66,7 @@ CREATE TABLE IF NOT EXISTS remote_defaults (
 
 
 def connect(paths: AppPaths) -> sqlite3.Connection:
-    connection = sqlite3.connect(paths.db_path)
+    connection = sqlite3.connect(paths.db_path, factory=RolloutsConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON;")
     return connection
@@ -112,7 +138,7 @@ def create_workspace(
     root_path: Path,
     store_path: Path,
 ) -> WorkspaceRecord:
-    created_at = datetime.now(timezone.utc)
+    created_at = utc_now()
     connection.execute(
         """
         INSERT INTO workspaces (id, root_path, store_path, remote_url, created_at)
@@ -305,7 +331,18 @@ def create_snapshot(
     vcs: str,
     metadata: str,
 ) -> SnapshotRecord:
-    captured_at = datetime.now(timezone.utc)
+    existing_workspace = get_workspace_for_session(connection, session_id=session_id)
+    if existing_workspace is not None and existing_workspace.id != workspace_id:
+        current_workspace = _get_workspace_by_id(connection, workspace_id=workspace_id)
+        if current_workspace is None:
+            raise RuntimeError(f"workspace disappeared during snapshot insert: {workspace_id}")
+        raise RolloutsError(
+            f"session {session_id!r} is already associated with workspace "
+            f"{existing_workspace.root_path} and cannot be snapshotted under "
+            f"{current_workspace.root_path}"
+        )
+
+    captured_at = utc_now()
     try:
         connection.execute(
             """
@@ -333,6 +370,10 @@ def create_snapshot(
             ),
         )
     except sqlite3.IntegrityError as error:
+        if "session is already associated with a different workspace" in str(error):
+            raise RolloutsError(
+                f"session {session_id!r} is already associated with a different workspace"
+            ) from error
         raise RolloutsError(
             f"snapshot already exists for session {session_id!r} and message {message_id!r}"
         ) from error
@@ -415,6 +456,35 @@ def list_snapshots(
     return [_snapshot_from_row(row) for row in rows]
 
 
+def get_workspace_for_session(
+    connection: sqlite3.Connection,
+    *,
+    session_id: str,
+) -> WorkspaceRecord | None:
+    rows = connection.execute(
+        """
+        SELECT DISTINCT w.id, w.root_path, w.store_path, w.remote_url, w.created_at
+        FROM snapshots s
+        INNER JOIN workspaces w ON w.id = s.workspace_id
+        WHERE s.session_id = ?
+        ORDER BY w.root_path ASC
+        """,
+        (session_id,),
+    ).fetchall()
+
+    if not rows:
+        return None
+
+    workspaces = [_workspace_from_row(row) for row in rows]
+    if len(workspaces) > 1:
+        roots = ", ".join(str(workspace.root_path) for workspace in workspaces)
+        raise RolloutsError(
+            f"session {session_id!r} is associated with multiple workspaces: {roots}"
+        )
+
+    return workspaces[0]
+
+
 def list_workspaces(
     connection: sqlite3.Connection,
     *,
@@ -449,6 +519,26 @@ def delete_workspace(connection: sqlite3.Connection, *, workspace_id: str) -> in
     cursor = connection.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
     connection.commit()
     return cursor.rowcount
+
+
+def _get_workspace_by_id(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+) -> WorkspaceRecord | None:
+    row = connection.execute(
+        """
+        SELECT id, root_path, store_path, remote_url, created_at
+        FROM workspaces
+        WHERE id = ?
+        """,
+        (workspace_id,),
+    ).fetchone()
+
+    if row is None:
+        return None
+
+    return _workspace_from_row(row)
 
 
 def _workspace_from_row(row: sqlite3.Row) -> WorkspaceRecord:

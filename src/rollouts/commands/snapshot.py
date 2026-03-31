@@ -8,7 +8,7 @@ from uuid import uuid4
 from rollouts.errors import RolloutsError
 from rollouts.models import SnapshotRecord
 from rollouts.paths import ensure_app_home, get_app_paths
-from rollouts.storage.db import connect, create_snapshot, initialize_db
+from rollouts.storage.db import connect, create_snapshot, get_workspace_for_session, initialize_db
 from rollouts.storage.git_store import (
     create_snapshot_commit,
     delete_snapshot_ref,
@@ -33,6 +33,13 @@ def snapshot_workspace(
     with connect(paths) as connection:
         initialize_db(connection)
         snapshot_id = uuid4().hex
+        existing_workspace = get_workspace_for_session(connection, session_id=session_id)
+        if existing_workspace is not None and existing_workspace.id != workspace_record.id:
+            raise RolloutsError(
+                f"session {session_id!r} is already associated with workspace "
+                f"{existing_workspace.root_path} and cannot be snapshotted under "
+                f"{workspace_record.root_path}"
+            )
 
         try:
             store_commit_sha = create_snapshot_commit(
