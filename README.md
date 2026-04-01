@@ -2,6 +2,16 @@
 
 A CLI to get training data from your own coding agents. Track rollouts and codebase snapshots at every turn. The data can be used for SFT, RL, and Continual Learning.
 
+It’s super simple to use. Make sure `opencode`, `git`, `gh`, and `hf` are installed, and that you’re signed in to both `gh` and `hf`.
+
+```bash
+uv tool install agent-rollouts
+
+rollouts setup
+
+rollouts hf push --agent opencode --name my-opencode-sessins
+```
+
 ## Current status
 
 Current prototype:
