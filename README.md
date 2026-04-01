@@ -9,6 +9,7 @@ Current prototype:
 - `uv`-managed Python CLI
 - global installable `rollouts` command
 - `rollouts snapshot [workspace] --session --message --metadata`
+- `rollouts setup [workspace] [--scope global|project]`
 - `rollouts restore [workspace] --session --message --dest`
 - `rollouts restore --repo <repo> --session --message --dest`
 - `rollouts delete [workspace] [--session] [--message]` and `rollouts delete --all`
@@ -45,6 +46,24 @@ rollouts --help
 ## Usage
 
 There is no separate `init` command. The first `snapshot` call automatically registers the workspace, creates the app home at `~/.rollouts` or `$ROLLOUTS_HOME`, bootstraps `rollouts.sqlite`, and creates the workspace bare store.
+
+Install the OpenCode Rollouts plugin:
+
+```bash
+rollouts setup
+rollouts setup --scope global
+rollouts setup --scope project
+```
+
+The `setup` command:
+
+- requires the `opencode` CLI to be installed first
+- with no `--scope`, shows an interactive prompt for global or project install
+- with `--scope global`, installs the plugin to `~/.config/opencode/plugins/rollouts.ts`
+- with `--scope project`, installs the plugin to `.opencode/plugins/rollouts.ts` under the selected workspace
+- defaults the workspace path to `.` and only uses it for project installs
+- writes a self-contained plugin file, so no separate plugin repo is required
+- replaces an existing `rollouts.ts` plugin file at the target path
 
 Create a snapshot for a session message:
 

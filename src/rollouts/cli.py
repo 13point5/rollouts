@@ -4,6 +4,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 
 from rollouts.commands.delete import delete_data, validate_delete_args
@@ -22,6 +23,7 @@ from rollouts.commands.remote import (
     set_workspace_remote,
 )
 from rollouts.commands.restore import restore_remote_workspace, restore_workspace
+from rollouts.commands.setup import install_opencode_plugin, validate_setup_scope
 from rollouts.commands.snapshot import snapshot_workspace
 from rollouts.errors import RolloutsError
 from rollouts.github import get_github_repo_web_url
@@ -44,6 +46,41 @@ error_console = Console(stderr=True)
 @app.callback()
 def main() -> None:
     """Rollouts command group."""
+
+
+@app.command()
+def setup(
+    workspace: Path = typer.Argument(
+        Path("."),
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Project path for --scope project. Ignored for --scope global.",
+    ),
+    scope: str | None = typer.Option(
+        None,
+        "--scope",
+        help="Install scope for the OpenCode plugin: global or project.",
+    ),
+) -> None:
+    """Install the OpenCode Rollouts plugin."""
+
+    try:
+        resolved_scope = _prompt_setup_scope() if scope is None else validate_setup_scope(scope)
+        result = install_opencode_plugin(
+            scope=resolved_scope,
+            workspace=workspace,
+        )
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output_console.print("[green]Installed OpenCode plugin[/green]")
+    output_console.print(f"scope: {result.scope}")
+    output_console.print(f"path: {result.plugin_path}")
+    output_console.print(f"replaced existing: {'yes' if result.replaced_existing else 'no'}")
 
 
 @app.command()
@@ -535,6 +572,35 @@ def _build_delete_confirmation(
         f"Delete the snapshot for session {session_id!r} and message {message_id!r} in "
         f"{workspace.resolve(strict=False)}? This cannot be undone."
     )
+
+
+def _prompt_setup_scope() -> str:
+    output_console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    "[bold]Choose where to install the OpenCode Rollouts plugin[/bold]",
+                    "",
+                    "[cyan]1.[/cyan] [bold]Global[/bold]   [dim]~/.config/opencode/plugins[/dim]",
+                    "[cyan]2.[/cyan] [bold]Project[/bold]  [dim].opencode/plugins[/dim]",
+                ]
+            ),
+            title="Rollouts Setup",
+            border_style="blue",
+            padding=(1, 2),
+        )
+    )
+    selected_scope = typer.prompt(
+        "Select an option",
+        default="1",
+        show_default=True,
+    ).strip()
+
+    if selected_scope == "1":
+        return "global"
+    if selected_scope == "2":
+        return "project"
+    raise RolloutsError("invalid setup selection; choose 1 for global or 2 for project")
 
 
 def _push_snapshots_with_progress(
