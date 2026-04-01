@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 from pathlib import Path
 
 import typer
@@ -29,7 +31,13 @@ from rollouts.errors import RolloutsError
 from rollouts.github import get_github_repo_web_url
 from rollouts.models import SnapshotRecord, WorkspaceRecord
 
-app = typer.Typer(no_args_is_help=True, help="Capture and restore agent rollout workspace states.")
+CLI_TITLE = "Rollouts"
+CLI_DESCRIPTION = (
+    "A CLI to get training data from your own coding agents. "
+    "Track rollouts and codebase snapshots at every turn."
+)
+
+app = typer.Typer(no_args_is_help=False, help=CLI_DESCRIPTION)
 remote_app = typer.Typer(no_args_is_help=True, help="Configure remote archive repositories.")
 remote_defaults_app = typer.Typer(
     no_args_is_help=True,
@@ -43,9 +51,28 @@ output_console = Console()
 error_console = Console(stderr=True)
 
 
-@app.callback()
-def main() -> None:
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context) -> None:
     """Rollouts command group."""
+
+    if ctx.invoked_subcommand is not None:
+        return
+
+    output_console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    f"[bold]{CLI_TITLE}[/bold] [cyan]v{_get_cli_version()}[/cyan]",
+                    "",
+                    CLI_DESCRIPTION,
+                ]
+            ),
+            border_style="blue",
+            padding=(1, 2),
+        )
+    )
+    output_console.print(ctx.get_help())
+    raise typer.Exit()
 
 
 @app.command()
@@ -601,6 +628,13 @@ def _prompt_setup_scope() -> str:
     if selected_scope == "2":
         return "project"
     raise RolloutsError("invalid setup selection; choose 1 for global or 2 for project")
+
+
+def _get_cli_version() -> str:
+    try:
+        return package_version("agent-rollouts")
+    except PackageNotFoundError:
+        return "dev"
 
 
 def _push_snapshots_with_progress(
