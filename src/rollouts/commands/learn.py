@@ -7,7 +7,15 @@ from urllib.parse import urlparse
 from rollouts.errors import RolloutsError
 from rollouts.models import LearnSessionRecord
 from rollouts.paths import ensure_app_home, get_app_paths
-from rollouts.storage.db import connect, get_learn_session, initialize_db, save_learn_session
+from rollouts.storage.db import (
+    connect,
+    get_learn_session,
+    initialize_db,
+    save_learn_session,
+)
+from rollouts.storage.db import (
+    list_learn_sessions as db_list_learn_sessions,
+)
 
 DEFAULT_DATASET_SUFFIX = "--rollouts-learn"
 
@@ -77,3 +85,11 @@ def create_learn_session(
             dataset_repo=normalized_dataset_repo,
             prime_config=prime_config,
         )
+
+
+def list_all_learn_sessions() -> list[LearnSessionRecord]:
+    paths = get_app_paths()
+    ensure_app_home(paths)
+    with connect(paths) as connection:
+        initialize_db(connection)
+        return db_list_learn_sessions(connection)

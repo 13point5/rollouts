@@ -13,7 +13,11 @@ from rich.table import Table
 from rollouts.commands.delete import delete_data, validate_delete_args
 from rollouts.commands.export import export_opencode_session, export_opencode_sessions_jsonl
 from rollouts.commands.hf import push_opencode_exports_to_hf
-from rollouts.commands.learn import create_learn_session, suggest_dataset_repo_name
+from rollouts.commands.learn import (
+    create_learn_session,
+    list_all_learn_sessions,
+    suggest_dataset_repo_name,
+)
 from rollouts.commands.list import list_all_sessions, list_all_workspaces
 from rollouts.commands.push import (
     PushResult,
@@ -47,9 +51,11 @@ remote_defaults_app = typer.Typer(
     help="Configure default GitHub archive repo creation settings.",
 )
 hf_app = typer.Typer(no_args_is_help=True, help="Upload rollout exports to Hugging Face datasets.")
+learn_app = typer.Typer(no_args_is_help=True, help="Manage global continual-learning sessions.")
 app.add_typer(remote_app, name="remote")
 remote_app.add_typer(remote_defaults_app, name="defaults")
 app.add_typer(hf_app, name="hf")
+app.add_typer(learn_app, name="learn")
 output_console = Console()
 error_console = Console(stderr=True)
 
@@ -152,8 +158,8 @@ def snapshot(
     output_console.print(f"captured at: {record.captured_at.isoformat()}")
 
 
-@app.command()
-def learn(
+@learn_app.command("start")
+def learn_start(
     session_name: str = typer.Argument(..., help="Global learn session name."),
     dataset: str | None = typer.Option(
         None,
@@ -193,6 +199,32 @@ def learn(
     output_console.print(f"session: {record.session_name}")
     output_console.print(f"dataset: {record.dataset_repo}")
     output_console.print(f"config path: {config}")
+
+
+@learn_app.command("list")
+def learn_list() -> None:
+    """List global learn sessions."""
+
+    sessions = list_all_learn_sessions()
+    if not sessions:
+        output_console.print("No learn sessions found.")
+        return
+
+    table = Table()
+    table.add_column(f"Session ({len(sessions)})", style="green", no_wrap=False)
+    table.add_column("Dataset", style="cyan", no_wrap=False)
+    table.add_column("Created", style="dim")
+    table.add_column("Updated", style="dim")
+
+    for session in sessions:
+        table.add_row(
+            session.session_name,
+            session.dataset_repo,
+            session.created_at.strftime("%Y-%m-%d %H:%M"),
+            session.updated_at.strftime("%Y-%m-%d %H:%M"),
+        )
+
+    output_console.print(table)
 
 
 @app.command("list")

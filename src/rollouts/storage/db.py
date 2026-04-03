@@ -362,6 +362,23 @@ def get_learn_session(
     return _learn_session_from_row(row)
 
 
+def list_learn_sessions(connection: sqlite3.Connection) -> list[LearnSessionRecord]:
+    rows = connection.execute(
+        """
+        SELECT
+          id,
+          session_name,
+          dataset_repo,
+          prime_config,
+          created_at,
+          updated_at
+        FROM learn_sessions
+        ORDER BY updated_at DESC, session_name ASC
+        """
+    ).fetchall()
+    return [_learn_session_from_row(row) for row in rows]
+
+
 def save_learn_session(
     connection: sqlite3.Connection,
     *,
