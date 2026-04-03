@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -471,6 +473,45 @@ def list_session_ids(connection: sqlite3.Connection) -> list[str]:
         """
     ).fetchall()
     return [row["session_id"] for row in rows]
+
+
+@dataclass(frozen=True)
+class SessionSummary:
+    session_id: str
+    workspace_id: str
+    workspace_root_path: Path
+    snapshot_count: int
+    first_captured_at: datetime
+    last_captured_at: datetime
+
+
+def list_sessions(connection: sqlite3.Connection) -> list[SessionSummary]:
+    rows = connection.execute(
+        """
+        SELECT
+            s.session_id,
+            s.workspace_id,
+            w.root_path AS workspace_root_path,
+            COUNT(*) AS snapshot_count,
+            MIN(s.captured_at) AS first_captured_at,
+            MAX(s.captured_at) AS last_captured_at
+        FROM snapshots s
+        INNER JOIN workspaces w ON w.id = s.workspace_id
+        GROUP BY s.session_id, s.workspace_id
+        ORDER BY MAX(s.captured_at) DESC
+        """
+    ).fetchall()
+    return [
+        SessionSummary(
+            session_id=row["session_id"],
+            workspace_id=row["workspace_id"],
+            workspace_root_path=Path(row["workspace_root_path"]),
+            snapshot_count=row["snapshot_count"],
+            first_captured_at=datetime.fromisoformat(row["first_captured_at"]),
+            last_captured_at=datetime.fromisoformat(row["last_captured_at"]),
+        )
+        for row in rows
+    ]
 
 
 def list_workspaces(

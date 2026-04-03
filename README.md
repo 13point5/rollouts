@@ -9,7 +9,7 @@ uv tool install agent-rollouts
 
 rollouts setup
 
-rollouts hf push --agent opencode --name my-opencode-sessins
+rollouts hf push --agent opencode --name my-opencode-sessions
 ```
 
 ## Current status

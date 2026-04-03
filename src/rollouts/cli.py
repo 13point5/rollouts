@@ -8,10 +8,12 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+from rich.table import Table
 
 from rollouts.commands.delete import delete_data, validate_delete_args
 from rollouts.commands.export import export_opencode_session, export_opencode_sessions_jsonl
 from rollouts.commands.hf import push_opencode_exports_to_hf
+from rollouts.commands.list import list_all_sessions, list_all_workspaces
 from rollouts.commands.push import (
     PushResult,
     get_push_scope_counts,
@@ -147,6 +149,49 @@ def snapshot(
     output_console.print(f"message: {record.message_id}")
     output_console.print(f"store commit: {record.store_commit_sha}")
     output_console.print(f"captured at: {record.captured_at.isoformat()}")
+
+
+@app.command("list")
+def list_command(
+    workspace: Path | None = typer.Argument(
+        None,
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path to filter by workspace.",
+    ),
+) -> None:
+    """List workspaces and sessions with snapshot counts."""
+    try:
+        sessions = list_all_sessions()
+    except Exception:
+        sessions = []
+
+    workspaces = list_all_workspaces()
+
+    if workspace is not None:
+        workspace = workspace.resolve()
+        sessions = [s for s in sessions if s.workspace_root_path == workspace]
+
+    table = Table()
+    table.add_column(f"Workspace ({len(workspaces)})", style="cyan", no_wrap=False)
+    table.add_column(f"Session ({len(sessions)})", style="green", no_wrap=False)
+    table.add_column("Snapshots", justify="right")
+    table.add_column("First", style="dim")
+    table.add_column("Last", style="dim")
+
+    for session in sessions:
+        table.add_row(
+            str(session.workspace_root_path),
+            session.session_id,
+            str(session.snapshot_count),
+            session.first_captured_at.strftime("%Y-%m-%d %H:%M"),
+            session.last_captured_at.strftime("%Y-%m-%d %H:%M"),
+        )
+
+    output_console.print(table)
 
 
 @remote_app.command("set")
