@@ -51,3 +51,29 @@ class SnapshotRecord(BaseModel):
     vcs: str
     metadata: str
     captured_at: datetime
+
+
+class LearnSessionRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    workspace_id: str
+    session_name: str
+    dataset_repo: str
+    prime_config: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class LearnRunRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    session_id: str
+    run_number: int
+    prime_run_id: str | None = None
+    prime_checkpoint_id: str | None = None
+    prime_model_id: str | None = None
+    prime_config: str
+    created_at: datetime
+    updated_at: datetime

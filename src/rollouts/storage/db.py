@@ -6,9 +6,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from rollouts.errors import RolloutsError
-from rollouts.models import AppPaths, RemoteDefaultsRecord, SnapshotRecord, WorkspaceRecord
+from rollouts.models import (
+    AppPaths,
+    LearnRunRecord,
+    LearnSessionRecord,
+    RemoteDefaultsRecord,
+    SnapshotRecord,
+    WorkspaceRecord,
+)
 from rollouts.utils import utc_now
 
 
@@ -64,6 +72,41 @@ CREATE TABLE IF NOT EXISTS remote_defaults (
   repo_prefix TEXT NOT NULL,
   visibility TEXT NOT NULL CHECK (visibility IN ('private', 'public', 'internal'))
 );
+
+CREATE TABLE IF NOT EXISTS learn_sessions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  session_name TEXT NOT NULL,
+  dataset_repo TEXT NOT NULL,
+  prime_config TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (workspace_id, session_name),
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS learn_sessions_workspace_id_idx
+ON learn_sessions (workspace_id);
+
+CREATE TABLE IF NOT EXISTS learn_runs (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  run_number INTEGER NOT NULL,
+  prime_run_id TEXT,
+  prime_checkpoint_id TEXT,
+  prime_model_id TEXT,
+  prime_config TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (session_id, run_number),
+  FOREIGN KEY (session_id) REFERENCES learn_sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS learn_runs_session_id_run_number_idx
+ON learn_runs (session_id, run_number);
+
+CREATE UNIQUE INDEX IF NOT EXISTS learn_runs_prime_run_id_idx
+ON learn_runs (prime_run_id);
 """
 
 
@@ -297,6 +340,283 @@ def set_remote_defaults(
         repo_prefix=repo_prefix,
         visibility=visibility,
     )
+
+
+def get_learn_session(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    session_name: str,
+) -> LearnSessionRecord | None:
+    row = connection.execute(
+        """
+        SELECT
+          id,
+          workspace_id,
+          session_name,
+          dataset_repo,
+          prime_config,
+          created_at,
+          updated_at
+        FROM learn_sessions
+        WHERE workspace_id = ?
+          AND session_name = ?
+        """,
+        (workspace_id, session_name),
+    ).fetchone()
+    if row is None:
+        return None
+
+    return _learn_session_from_row(row)
+
+
+def save_learn_session(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    session_name: str,
+    dataset_repo: str,
+    prime_config: str,
+) -> LearnSessionRecord:
+    existing = get_learn_session(
+        connection,
+        workspace_id=workspace_id,
+        session_name=session_name,
+    )
+    session_id = existing.id if existing is not None else uuid4().hex
+    created_at = existing.created_at if existing is not None else utc_now()
+    updated_at = utc_now()
+
+    connection.execute(
+        """
+        INSERT INTO learn_sessions (
+          id,
+          workspace_id,
+          session_name,
+          dataset_repo,
+          prime_config,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace_id, session_name) DO UPDATE SET
+          dataset_repo = excluded.dataset_repo,
+          prime_config = excluded.prime_config,
+          updated_at = excluded.updated_at
+        """,
+        (
+            session_id,
+            workspace_id,
+            session_name,
+            dataset_repo,
+            prime_config,
+            created_at.isoformat(),
+            updated_at.isoformat(),
+        ),
+    )
+    connection.commit()
+
+    saved = get_learn_session(
+        connection,
+        workspace_id=workspace_id,
+        session_name=session_name,
+    )
+    if saved is None:
+        raise RuntimeError(f"learn session disappeared during save: {workspace_id}/{session_name}")
+    return saved
+
+
+def get_learn_run(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+) -> LearnRunRecord | None:
+    row = connection.execute(
+        """
+        SELECT
+          id,
+          session_id,
+          run_number,
+          prime_run_id,
+          prime_checkpoint_id,
+          prime_model_id,
+          prime_config,
+          created_at,
+          updated_at
+        FROM learn_runs
+        WHERE id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    return _learn_run_from_row(row)
+
+
+def get_learn_run_by_prime_run_id(
+    connection: sqlite3.Connection,
+    *,
+    prime_run_id: str,
+) -> LearnRunRecord | None:
+    row = connection.execute(
+        """
+        SELECT
+          id,
+          session_id,
+          run_number,
+          prime_run_id,
+          prime_checkpoint_id,
+          prime_model_id,
+          prime_config,
+          created_at,
+          updated_at
+        FROM learn_runs
+        WHERE prime_run_id = ?
+        """,
+        (prime_run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    return _learn_run_from_row(row)
+
+
+def list_learn_runs(
+    connection: sqlite3.Connection,
+    *,
+    session_id: str,
+) -> list[LearnRunRecord]:
+    rows = connection.execute(
+        """
+        SELECT
+          id,
+          session_id,
+          run_number,
+          prime_run_id,
+          prime_checkpoint_id,
+          prime_model_id,
+          prime_config,
+          created_at,
+          updated_at
+        FROM learn_runs
+        WHERE session_id = ?
+        ORDER BY run_number ASC
+        """,
+        (session_id,),
+    ).fetchall()
+    return [_learn_run_from_row(row) for row in rows]
+
+
+def get_latest_learn_run(
+    connection: sqlite3.Connection,
+    *,
+    session_id: str,
+) -> LearnRunRecord | None:
+    row = connection.execute(
+        """
+        SELECT
+          id,
+          session_id,
+          run_number,
+          prime_run_id,
+          checkpoint_id,
+          model_id,
+          config,
+          created_at,
+          updated_at
+        FROM learn_runs
+        WHERE session_id = ?
+        ORDER BY run_number DESC
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    return _learn_run_from_row(row)
+
+
+def save_learn_run(
+    connection: sqlite3.Connection,
+    *,
+    run_id: str,
+    session_id: str,
+    prime_run_id: str | None = None,
+    prime_checkpoint_id: str | None = None,
+    prime_model_id: str | None = None,
+    prime_config: str,
+) -> LearnRunRecord:
+    existing = get_learn_run(connection, run_id=run_id)
+    if existing is not None and existing.session_id != session_id:
+        raise RolloutsError(
+            f"run {run_id!r} is already associated with learn session {existing.session_id!r}"
+        )
+
+    run_number = (
+        existing.run_number
+        if existing is not None
+        else _get_next_learn_run_number(connection, session_id=session_id)
+    )
+    created_at = existing.created_at if existing is not None else utc_now()
+    updated_at = utc_now()
+
+    connection.execute(
+        """
+        INSERT INTO learn_runs (
+          id,
+          session_id,
+          run_number,
+          prime_run_id,
+          prime_checkpoint_id,
+          prime_model_id,
+          prime_config,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          prime_run_id = excluded.prime_run_id,
+          prime_checkpoint_id = excluded.prime_checkpoint_id,
+          prime_model_id = excluded.prime_model_id,
+          prime_config = excluded.prime_config,
+          updated_at = excluded.updated_at
+        """,
+        (
+            run_id,
+            session_id,
+            run_number,
+            prime_run_id,
+            prime_checkpoint_id,
+            prime_model_id,
+            prime_config,
+            created_at.isoformat(),
+            updated_at.isoformat(),
+        ),
+    )
+    connection.commit()
+
+    saved = get_learn_run(connection, run_id=run_id)
+    if saved is None:
+        raise RuntimeError(f"learn run disappeared during save: {run_id}")
+    return saved
+
+
+def _get_next_learn_run_number(
+    connection: sqlite3.Connection,
+    *,
+    session_id: str,
+) -> int:
+    row = connection.execute(
+        """
+        SELECT COALESCE(MAX(run_number), 0) AS max_run_number
+        FROM learn_runs
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    return int(row["max_run_number"]) + 1
 
 
 def create_snapshot(
@@ -610,4 +930,30 @@ def _snapshot_from_row(row: sqlite3.Row) -> SnapshotRecord:
         vcs=row["vcs"],
         metadata=row["metadata"],
         captured_at=row["captured_at"],
+    )
+
+
+def _learn_session_from_row(row: sqlite3.Row) -> LearnSessionRecord:
+    return LearnSessionRecord(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        session_name=row["session_name"],
+        dataset_repo=row["dataset_repo"],
+        prime_config=row["prime_config"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _learn_run_from_row(row: sqlite3.Row) -> LearnRunRecord:
+    return LearnRunRecord(
+        id=row["id"],
+        session_id=row["session_id"],
+        run_number=row["run_number"],
+        prime_run_id=row["prime_run_id"],
+        prime_checkpoint_id=row["prime_checkpoint_id"],
+        prime_model_id=row["prime_model_id"],
+        prime_config=row["prime_config"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
