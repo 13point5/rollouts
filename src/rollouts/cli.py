@@ -13,6 +13,7 @@ from rich.table import Table
 from rollouts.commands.delete import delete_data, validate_delete_args
 from rollouts.commands.export import export_opencode_session, export_opencode_sessions_jsonl
 from rollouts.commands.hf import push_opencode_exports_to_hf
+from rollouts.commands.learn import create_learn_session, suggest_dataset_repo_name
 from rollouts.commands.list import list_all_sessions, list_all_workspaces
 from rollouts.commands.push import (
     PushResult,
@@ -149,6 +150,49 @@ def snapshot(
     output_console.print(f"message: {record.message_id}")
     output_console.print(f"store commit: {record.store_commit_sha}")
     output_console.print(f"captured at: {record.captured_at.isoformat()}")
+
+
+@app.command()
+def learn(
+    session_name: str = typer.Argument(..., help="Global learn session name."),
+    dataset: str | None = typer.Option(
+        None,
+        "--dataset",
+        help="Dataset repo name, repo id, or Hugging Face dataset URL for the learn session.",
+    ),
+    config: Path = typer.Option(
+        ...,
+        "--config",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="Prime config TOML file to store for the learn session.",
+    ),
+) -> None:
+    """Create a new global learn session."""
+
+    try:
+        if dataset is None:
+            dataset = typer.prompt(
+                "Dataset repo",
+                default=suggest_dataset_repo_name(session_name=session_name),
+                show_default=True,
+            )
+        record = create_learn_session(
+            session_name=session_name,
+            dataset_repo=dataset,
+            config_path=config,
+        )
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output_console.print("[green]Created learn session[/green]")
+    output_console.print(f"session: {record.session_name}")
+    output_console.print(f"dataset: {record.dataset_repo}")
+    output_console.print(f"config path: {config}")
 
 
 @app.command("list")

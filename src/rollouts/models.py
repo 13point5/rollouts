@@ -57,7 +57,6 @@ class LearnSessionRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: str
-    workspace_id: str
     session_name: str
     dataset_repo: str
     prime_config: str

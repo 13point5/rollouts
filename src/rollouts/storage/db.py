@@ -75,18 +75,13 @@ CREATE TABLE IF NOT EXISTS remote_defaults (
 
 CREATE TABLE IF NOT EXISTS learn_sessions (
   id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
   session_name TEXT NOT NULL,
   dataset_repo TEXT NOT NULL,
   prime_config TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE (workspace_id, session_name),
-  FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+  UNIQUE (session_name)
 );
-
-CREATE INDEX IF NOT EXISTS learn_sessions_workspace_id_idx
-ON learn_sessions (workspace_id);
 
 CREATE TABLE IF NOT EXISTS learn_runs (
   id TEXT PRIMARY KEY,
@@ -345,24 +340,21 @@ def set_remote_defaults(
 def get_learn_session(
     connection: sqlite3.Connection,
     *,
-    workspace_id: str,
     session_name: str,
 ) -> LearnSessionRecord | None:
     row = connection.execute(
         """
         SELECT
           id,
-          workspace_id,
           session_name,
           dataset_repo,
           prime_config,
           created_at,
           updated_at
         FROM learn_sessions
-        WHERE workspace_id = ?
-          AND session_name = ?
+        WHERE session_name = ?
         """,
-        (workspace_id, session_name),
+        (session_name,),
     ).fetchone()
     if row is None:
         return None
@@ -373,14 +365,12 @@ def get_learn_session(
 def save_learn_session(
     connection: sqlite3.Connection,
     *,
-    workspace_id: str,
     session_name: str,
     dataset_repo: str,
     prime_config: str,
 ) -> LearnSessionRecord:
     existing = get_learn_session(
         connection,
-        workspace_id=workspace_id,
         session_name=session_name,
     )
     session_id = existing.id if existing is not None else uuid4().hex
@@ -391,22 +381,20 @@ def save_learn_session(
         """
         INSERT INTO learn_sessions (
           id,
-          workspace_id,
           session_name,
           dataset_repo,
           prime_config,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(workspace_id, session_name) DO UPDATE SET
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_name) DO UPDATE SET
           dataset_repo = excluded.dataset_repo,
           prime_config = excluded.prime_config,
           updated_at = excluded.updated_at
         """,
         (
             session_id,
-            workspace_id,
             session_name,
             dataset_repo,
             prime_config,
@@ -418,11 +406,10 @@ def save_learn_session(
 
     saved = get_learn_session(
         connection,
-        workspace_id=workspace_id,
         session_name=session_name,
     )
     if saved is None:
-        raise RuntimeError(f"learn session disappeared during save: {workspace_id}/{session_name}")
+        raise RuntimeError(f"learn session disappeared during save: {session_name}")
     return saved
 
 
@@ -936,7 +923,6 @@ def _snapshot_from_row(row: sqlite3.Row) -> SnapshotRecord:
 def _learn_session_from_row(row: sqlite3.Row) -> LearnSessionRecord:
     return LearnSessionRecord(
         id=row["id"],
-        workspace_id=row["workspace_id"],
         session_name=row["session_name"],
         dataset_repo=row["dataset_repo"],
         prime_config=row["prime_config"],
