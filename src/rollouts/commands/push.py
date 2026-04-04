@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rollouts.errors import RolloutsError
-from rollouts.github import create_github_archive_repo
+from rollouts.github import create_github_repo
 from rollouts.models import SnapshotRecord, WorkspaceRecord
 from rollouts.paths import ensure_app_home, get_app_paths
 from rollouts.storage.db import (
@@ -288,7 +288,7 @@ def _ensure_workspace_remote(
             "no remote defaults configured; run `rollouts remote defaults set` first"
         )
 
-    remote_url = create_github_archive_repo(
+    remote_url = create_github_repo(
         workspace=workspace_record,
         defaults=defaults,
     )

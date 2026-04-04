@@ -13,13 +13,13 @@ def ensure_github_cli_available() -> None:
         raise RolloutsError("gh executable not found")
 
 
-def create_github_archive_repo(
+def create_github_repo(
     *,
     workspace: WorkspaceRecord,
     defaults: RemoteDefaultsRecord,
 ) -> str:
     ensure_github_cli_available()
-    repo_name = build_archive_repo_name(workspace=workspace, prefix=defaults.repo_prefix)
+    repo_name = build_github_repo_name(workspace=workspace, prefix=defaults.repo_prefix)
     repo_full_name = f"{defaults.owner}/{repo_name}"
 
     _run_gh(
@@ -39,7 +39,7 @@ def create_github_archive_repo(
     return f"https://github.com/{repo_full_name}.git"
 
 
-def build_archive_repo_name(*, workspace: WorkspaceRecord, prefix: str) -> str:
+def build_github_repo_name(*, workspace: WorkspaceRecord, prefix: str) -> str:
     slug = _slugify(workspace.root_path.name) or "workspace"
     return f"{prefix}{slug}-{workspace.id[:8]}"
 

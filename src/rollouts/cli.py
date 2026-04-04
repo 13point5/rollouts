@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -54,15 +55,18 @@ from rollouts.storage.db import connect, get_remote_defaults, initialize_db
 
 CLI_TITLE = "Rollouts"
 CLI_DESCRIPTION = (
-    "A CLI to get training data from your own coding agents. "
-    "Track rollouts and codebase snapshots at every turn."
+    "A CLI for Continual Learning with your own coding agent sessions. "
+    "Track rollouts and codebase snapshots at every turn. "
 )
 
-app = typer.Typer(no_args_is_help=False, help=CLI_DESCRIPTION)
-remote_app = typer.Typer(no_args_is_help=True, help="Configure remote archive repositories.")
+app = typer.Typer(no_args_is_help=False, help="Rollouts commands.")
+remote_app = typer.Typer(
+    no_args_is_help=True,
+    help="Configure GitHub repos for tracked workspaces.",
+)
 remote_defaults_app = typer.Typer(
     no_args_is_help=True,
-    help="Configure default GitHub archive repo creation settings.",
+    help="Configure default GitHub repo creation settings.",
 )
 hf_app = typer.Typer(no_args_is_help=True, help="Upload rollout exports to Hugging Face datasets.")
 learn_app = typer.Typer(no_args_is_help=True, help="Manage global continual-learning sessions.")
@@ -123,6 +127,7 @@ def setup(
             scope=resolved_scope,
             workspace=workspace,
         )
+        remote_defaults = _ensure_remote_defaults_configured_for_setup()
     except RolloutsError as error:
         error_console.print(f"[red]Error:[/red] {error}")
         raise typer.Exit(code=1) from error
@@ -131,6 +136,11 @@ def setup(
     output_console.print(f"scope: {result.scope}")
     output_console.print(f"path: {result.plugin_path}")
     output_console.print(f"replaced existing: {'yes' if result.replaced_existing else 'no'}")
+    output_console.print("")
+    output_console.print("[green]GitHub repo defaults[/green]")
+    output_console.print(f"owner: {remote_defaults.owner}")
+    output_console.print(f"prefix: {remote_defaults.repo_prefix}")
+    output_console.print(f"visibility: {remote_defaults.visibility}")
 
 
 @app.command()
@@ -258,7 +268,7 @@ def learn_start(
     output_console.print(f"total rows: {hf_result.total_rows}")
     if remote_urls:
         output_console.print("")
-        output_console.print("Archive remotes")
+        output_console.print("GitHub repos")
         for remote_url in remote_urls:
             output_console.print(f"[link={remote_url}]{remote_url}[/link]")
         output_console.print("")
@@ -578,10 +588,10 @@ def remote_set(
     remote_url: str = typer.Option(
         ...,
         "--url",
-        help="GitHub repository URL to use as the workspace archive remote.",
+        help="GitHub repository URL to use as the workspace remote.",
     ),
 ) -> None:
-    """Set the archive remote for a workspace."""
+    """Set the GitHub repo for a workspace."""
 
     try:
         workspace_record = set_workspace_remote(
@@ -613,7 +623,7 @@ def remote_clear(
         help="Clear stored remotes for all registered workspaces.",
     ),
 ) -> None:
-    """Clear stored archive remotes without deleting snapshots."""
+    """Clear stored GitHub repo remotes without deleting snapshots."""
 
     try:
         if clear_all:
@@ -632,29 +642,30 @@ def remote_clear(
 
 @remote_defaults_app.command("set")
 def remote_defaults_set(
-    owner: str = typer.Option(
-        ...,
+    owner: str | None = typer.Option(
+        None,
         "--owner",
-        help="GitHub user or organization that should own auto-created archive repos.",
+        help="GitHub user or organization that should own auto-created GitHub repos.",
     ),
-    prefix: str = typer.Option(
-        "rollouts-",
+    prefix: str | None = typer.Option(
+        None,
         "--prefix",
-        help="Prefix to use when deriving auto-created archive repo names.",
+        help="Prefix to use when deriving auto-created GitHub repo names.",
     ),
-    visibility: str = typer.Option(
-        "public",
+    visibility: str | None = typer.Option(
+        None,
         "--visibility",
-        help="GitHub repo visibility for auto-created archive repos: private, public, or internal.",
+        help="GitHub repo visibility for auto-created GitHub repos: private, public, or internal.",
     ),
 ) -> None:
-    """Set global defaults for auto-created GitHub archive repos."""
+    """Set global defaults for auto-created GitHub repos."""
 
     try:
         _configure_remote_defaults(
             owner=owner,
-            prefix=prefix,
-            visibility=visibility,
+            prefix="" if prefix is None else prefix,
+            visibility="" if visibility is None else visibility,
+            prompt_for_missing=True,
         )
     except RolloutsError as error:
         error_console.print(f"[red]Error:[/red] {error}")
@@ -675,7 +686,7 @@ def restore(
     repo_url: str | None = typer.Option(
         None,
         "--repo",
-        help="Remote archive repo URL or GitHub repo page URL.",
+        help="GitHub repo URL or GitHub repo page URL.",
     ),
     session_id: str = typer.Option(..., "--session", help="External chat session identifier."),
     message_id: str = typer.Option(..., "--message", help="External message identifier."),
@@ -751,10 +762,10 @@ def push(
     create_remote: bool = typer.Option(
         False,
         "--create-remote",
-        help="Create and remember a GitHub archive repo when a workspace has no configured remote.",
+        help="Create and remember a GitHub repo when a workspace has no configured remote.",
     ),
 ) -> None:
-    """Push stored snapshots to configured archive remotes."""
+    """Push stored snapshots to configured GitHub repos."""
 
     try:
         validate_push_args(
@@ -976,7 +987,7 @@ def hf_push(
     output_console.print(f"total rows: {result.total_rows}")
     if remote_urls:
         output_console.print("")
-        output_console.print("Archive remotes")
+        output_console.print("GitHub repos")
         for remote_url in remote_urls:
             output_console.print(f"[link={remote_url}]{remote_url}[/link]")
         output_console.print("")
@@ -1040,7 +1051,31 @@ def _prompt_setup_scope() -> str:
     raise RolloutsError("invalid setup selection; choose 1 for global or 2 for project")
 
 
+def _ensure_remote_defaults_configured_for_setup() -> RemoteDefaultsRecord:
+    return _ensure_remote_defaults_configured(
+        message=(
+            "GitHub repo defaults are not configured yet. "
+            "Set them now so setup leaves learn ready to use."
+        ),
+        default_prefix="rollouts-",
+        default_visibility="private",
+    )
+
+
 def _ensure_remote_defaults_configured_for_learn() -> RemoteDefaultsRecord:
+    return _ensure_remote_defaults_configured(
+        message="GitHub repo defaults are required before learn can push workspace snapshots.",
+        default_prefix="rollouts-",
+        default_visibility="public",
+    )
+
+
+def _ensure_remote_defaults_configured(
+    *,
+    message: str,
+    default_prefix: str,
+    default_visibility: str,
+) -> RemoteDefaultsRecord:
     paths = get_app_paths()
     ensure_app_home(paths)
     with connect(paths) as connection:
@@ -1050,13 +1085,11 @@ def _ensure_remote_defaults_configured_for_learn() -> RemoteDefaultsRecord:
     if defaults is not None:
         return defaults
 
-    output_console.print(
-        "GitHub archive defaults are required before learn can push workspace snapshots."
-    )
+    output_console.print(message)
     return _configure_remote_defaults(
         owner=None,
-        prefix="rollouts-",
-        visibility="public",
+        prefix=default_prefix,
+        visibility=default_visibility,
         prompt_for_missing=True,
     )
 
@@ -1077,13 +1110,13 @@ def _configure_remote_defaults(
             resolved_owner = typer.prompt("GitHub owner or organization").strip()
         if not resolved_prefix:
             resolved_prefix = typer.prompt(
-                "Archive repo prefix",
+                "GitHub repo prefix",
                 default="rollouts-",
                 show_default=True,
             ).strip()
         if not resolved_visibility:
             resolved_visibility = typer.prompt(
-                "Archive repo visibility",
+                "GitHub repo visibility",
                 default="public",
                 show_default=True,
             ).strip()
@@ -1102,10 +1135,37 @@ def _configure_remote_defaults(
 
 
 def _get_cli_version() -> str:
+    project_version = _get_local_project_version()
+    if project_version is not None:
+        return project_version
+
     try:
         return package_version("agent-rollouts")
     except PackageNotFoundError:
         return "dev"
+
+
+def _get_local_project_version() -> str | None:
+    for parent in Path(__file__).resolve().parents:
+        pyproject_path = parent / "pyproject.toml"
+        if not pyproject_path.is_file():
+            continue
+
+        try:
+            pyproject_data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            return None
+
+        project_data = pyproject_data.get("project")
+        if not isinstance(project_data, dict):
+            return None
+        if project_data.get("name") != "agent-rollouts":
+            continue
+
+        version = project_data.get("version")
+        return version if isinstance(version, str) and version.strip() else None
+
+    return None
 
 
 def _format_datetime(value) -> str:

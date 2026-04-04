@@ -8,11 +8,9 @@ A CLI for Continual Learning with your own coding agent sessions. Track rollouts
 # Install rollouts
 uv tool install agent-rollouts
 
-# Install the OpenCode Rollouts plugin
+# Install the OpenCode Rollouts plugin.
+# If GitHub repo defaults are not configured yet, setup will prompt for them.
 rollouts setup
-
-# Configure default GitHub archive repo settings
-rollouts remote defaults set --owner github-username --prefix rollouts-
 
 # Start a learn session
 rollouts learn start my-session --config /path/to/rl.toml
@@ -28,7 +26,7 @@ rollouts learn restart my-session
 rollouts learn restart my-session --config /path/to/rl.toml
 ```
 
-Make sure `opencode`, `git`, `gh`, and `hf` are installed first.
+Make sure `prime`, `opencode`, `git`, `gh`, and `hf` are installed first.
 
 If you plan to use `rollouts learn`, make sure your Prime environment is also configured.
 
@@ -52,8 +50,8 @@ uv tool upgrade agent-rollouts
 
 ### Learn Sessions
 
-- `rollouts setup` installs the OpenCode Rollouts plugin.
-- `rollouts remote defaults set` is required before `rollouts learn start` because learn sessions push tracked snapshots and may auto-create archive repos.
+- `rollouts setup` installs the OpenCode Rollouts plugin and prompts for GitHub repo defaults if they are not configured yet.
+- `rollouts remote defaults set` is required before `rollouts learn start` because learn sessions push tracked snapshots and may auto-create GitHub repos.
 - `rollouts learn start <session> --config <path>` creates the learn session, stores the config, syncs the dataset, creates run `#1`, and starts the initial Prime run.
 - `rollouts learn list` shows your learn sessions.
 - `rollouts learn status <session>` shows the latest run, current Prime state, config path, and restart lineage.
