@@ -16,7 +16,7 @@ from rollouts.commands.hf import push_opencode_exports_to_hf
 from rollouts.commands.learn import (
     create_learn_session,
     list_all_learn_sessions,
-    suggest_dataset_repo_name,
+    suggest_dataset_repo_id,
 )
 from rollouts.commands.list import list_all_sessions, list_all_workspaces
 from rollouts.commands.push import (
@@ -183,7 +183,7 @@ def learn_start(
         if dataset is None:
             dataset = typer.prompt(
                 "Dataset repo",
-                default=suggest_dataset_repo_name(session_name=session_name),
+                default=suggest_dataset_repo_id(session_name=session_name),
                 show_default=True,
             )
         record = create_learn_session(

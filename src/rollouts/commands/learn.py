@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from urllib.parse import urlparse
+
+import tomlkit
+from huggingface_hub import HfApi
+from huggingface_hub.errors import HfHubHTTPError
+from tomlkit.exceptions import TOMLKitError
 
 from rollouts.errors import RolloutsError
 from rollouts.models import LearnSessionRecord
@@ -48,6 +54,58 @@ def normalize_dataset_repo(*, dataset_repo: str) -> str:
     return normalized_dataset_repo
 
 
+def resolve_dataset_repo_id(*, dataset_repo: str) -> str:
+    normalized_dataset_repo = normalize_dataset_repo(dataset_repo=dataset_repo)
+    if "/" in normalized_dataset_repo:
+        return normalized_dataset_repo
+
+    token = os.environ.get("HF_TOKEN")
+    api = HfApi()
+    try:
+        auth_info = api.whoami(token=token)
+    except HfHubHTTPError as error:
+        raise RolloutsError(
+            "not authenticated with Hugging Face. Run `hf auth login` or set HF_TOKEN."
+        ) from error
+
+    username = str(auth_info["name"]).strip()
+    if not username:
+        raise RolloutsError("could not determine Hugging Face username")
+
+    return f"{username}/{normalized_dataset_repo}"
+
+
+def suggest_dataset_repo_id(*, session_name: str) -> str:
+    suggested_name = suggest_dataset_repo_name(session_name=session_name)
+    return resolve_dataset_repo_id(dataset_repo=suggested_name)
+
+
+def add_dataset_to_prime_config(*, prime_config: str, dataset_repo: str) -> str:
+    try:
+        document = tomlkit.parse(prime_config)
+    except TOMLKitError as error:
+        raise RolloutsError("config file is not valid TOML") from error
+
+    envs = document.get("env")
+    if not isinstance(envs, list) or not envs:
+        raise RolloutsError("config file must include at least one [[env]] section")
+
+    for env in envs:
+        if not hasattr(env, "get") or not hasattr(env, "__setitem__"):
+            raise RolloutsError("each [[env]] entry must be a TOML table")
+
+        args = env.get("args")
+        if args is None:
+            args = tomlkit.inline_table()
+            env["args"] = args
+        elif not hasattr(args, "__setitem__"):
+            raise RolloutsError("each [[env]] entry args value must be a TOML table")
+
+        args["dataset"] = dataset_repo
+
+    return tomlkit.dumps(document)
+
+
 def create_learn_session(
     *,
     session_name: str,
@@ -58,7 +116,7 @@ def create_learn_session(
     if not normalized_session_name:
         raise RolloutsError("session name cannot be empty")
 
-    normalized_dataset_repo = normalize_dataset_repo(dataset_repo=dataset_repo)
+    normalized_dataset_repo = resolve_dataset_repo_id(dataset_repo=dataset_repo)
 
     try:
         prime_config = config_path.read_text(encoding="utf-8")
@@ -67,6 +125,11 @@ def create_learn_session(
 
     if not prime_config.strip():
         raise RolloutsError("config file cannot be empty")
+
+    prime_config = add_dataset_to_prime_config(
+        prime_config=prime_config,
+        dataset_repo=normalized_dataset_repo,
+    )
 
     paths = get_app_paths()
     ensure_app_home(paths)
