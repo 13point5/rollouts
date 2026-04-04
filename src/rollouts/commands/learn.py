@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from urllib.parse import urlparse
 
 import tomlkit
-from huggingface_hub import HfApi
-from huggingface_hub.errors import HfHubHTTPError
 from tomlkit.exceptions import TOMLKitError
 
+from rollouts.commands.hf import resolve_dataset_repo_id as resolve_hf_dataset_repo_id
 from rollouts.errors import RolloutsError
 from rollouts.models import LearnSessionRecord
 from rollouts.paths import ensure_app_home, get_app_paths
@@ -20,10 +18,13 @@ from rollouts.storage.db import (
     save_learn_session,
 )
 from rollouts.storage.db import (
+    delete_learn_session as db_delete_learn_session,
+)
+from rollouts.storage.db import (
     list_learn_sessions as db_list_learn_sessions,
 )
 
-DEFAULT_DATASET_SUFFIX = "--rollouts-learn"
+DEFAULT_DATASET_SUFFIX = "-rollouts-learn"
 
 
 def suggest_dataset_repo_name(*, session_name: str) -> str:
@@ -59,20 +60,7 @@ def resolve_dataset_repo_id(*, dataset_repo: str) -> str:
     if "/" in normalized_dataset_repo:
         return normalized_dataset_repo
 
-    token = os.environ.get("HF_TOKEN")
-    api = HfApi()
-    try:
-        auth_info = api.whoami(token=token)
-    except HfHubHTTPError as error:
-        raise RolloutsError(
-            "not authenticated with Hugging Face. Run `hf auth login` or set HF_TOKEN."
-        ) from error
-
-    username = str(auth_info["name"]).strip()
-    if not username:
-        raise RolloutsError("could not determine Hugging Face username")
-
-    return f"{username}/{normalized_dataset_repo}"
+    return resolve_hf_dataset_repo_id(name=normalized_dataset_repo)
 
 
 def suggest_dataset_repo_id(*, session_name: str) -> str:
@@ -156,3 +144,11 @@ def list_all_learn_sessions() -> list[LearnSessionRecord]:
     with connect(paths) as connection:
         initialize_db(connection)
         return db_list_learn_sessions(connection)
+
+
+def delete_learn_session_by_name(*, session_name: str) -> int:
+    paths = get_app_paths()
+    ensure_app_home(paths)
+    with connect(paths) as connection:
+        initialize_db(connection)
+        return db_delete_learn_session(connection, session_name=session_name)

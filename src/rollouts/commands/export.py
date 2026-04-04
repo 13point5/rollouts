@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,7 +47,7 @@ class OpenCodeExportPayload:
 
 def build_opencode_export_payload(*, session_id: str) -> OpenCodeExportPayload:
     raw_json = _run_opencode_export(session_id=session_id)
-    parsed = _parse_opencode_export(raw_json)
+    parsed = _parse_opencode_export(raw_json, requested_session_id=session_id)
     metadata = _get_rollouts_metadata(session_id=parsed.session_id)
 
     payload = {
@@ -110,22 +111,47 @@ def export_opencode_sessions_jsonl(*, output_path: Path) -> OpenCodeJsonlExportR
 
 
 def _run_opencode_export(*, session_id: str) -> str:
+    temporary_output_path: Path | None = None
     try:
-        return subprocess.run(
-            ["opencode", "export", session_id],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
+        with tempfile.NamedTemporaryFile(
+            mode="w+",
+            encoding="utf-8",
+            suffix=".json",
+            delete=False,
+        ) as output_file:
+            temporary_output_path = Path(output_file.name)
+            completed = subprocess.run(
+                ["opencode", "export", session_id],
+                check=True,
+                stdout=output_file,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+        del completed
+        return temporary_output_path.read_text(encoding="utf-8")
     except FileNotFoundError as error:
         raise RolloutsError("opencode executable not found") from error
     except subprocess.CalledProcessError as error:
         message = error.stderr.strip() or error.stdout.strip() or "opencode export failed"
         raise RolloutsError(message) from error
+    finally:
+        if temporary_output_path is not None:
+            temporary_output_path.unlink(missing_ok=True)
 
 
-def _parse_opencode_export(raw_json: str) -> ParsedOpenCodeExport:
-    payload = json.loads(raw_json)
+def _parse_opencode_export(
+    raw_json: str,
+    *,
+    requested_session_id: str,
+) -> ParsedOpenCodeExport:
+    try:
+        payload = json.loads(raw_json)
+    except json.JSONDecodeError as error:
+        raise RolloutsError(
+            "opencode export returned invalid JSON for session "
+            f"{requested_session_id!r}: {error.msg} at line {error.lineno} column {error.colno}"
+        ) from error
 
     info = payload["info"]
     messages = payload["messages"]

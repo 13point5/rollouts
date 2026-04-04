@@ -15,6 +15,7 @@ from rollouts.commands.export import export_opencode_session, export_opencode_se
 from rollouts.commands.hf import push_opencode_exports_to_hf
 from rollouts.commands.learn import (
     create_learn_session,
+    delete_learn_session_by_name,
     list_all_learn_sessions,
     suggest_dataset_repo_id,
 )
@@ -36,7 +37,9 @@ from rollouts.commands.setup import install_opencode_plugin, validate_setup_scop
 from rollouts.commands.snapshot import snapshot_workspace
 from rollouts.errors import RolloutsError
 from rollouts.github import get_github_repo_web_url
-from rollouts.models import SnapshotRecord, WorkspaceRecord
+from rollouts.models import RemoteDefaultsRecord, SnapshotRecord, WorkspaceRecord
+from rollouts.paths import ensure_app_home, get_app_paths
+from rollouts.storage.db import connect, get_remote_defaults, initialize_db
 
 CLI_TITLE = "Rollouts"
 CLI_DESCRIPTION = (
@@ -179,6 +182,7 @@ def learn_start(
 ) -> None:
     """Create a new global learn session."""
 
+    created_session_name: str | None = None
     try:
         if dataset is None:
             dataset = typer.prompt(
@@ -186,12 +190,29 @@ def learn_start(
                 default=suggest_dataset_repo_id(session_name=session_name),
                 show_default=True,
             )
+        _ensure_remote_defaults_configured_for_learn()
         record = create_learn_session(
             session_name=session_name,
             dataset_repo=dataset,
             config_path=config,
         )
+        created_session_name = record.session_name
+        snapshot_push_result, remote_urls = _push_snapshots_with_progress(
+            workspace=Path("."),
+            session_id=None,
+            message_id=None,
+            push_all=True,
+            create_remote=True,
+        )
+        output_console.print("Syncing Hugging Face dataset...")
+        hf_result = push_opencode_exports_to_hf(
+            name=record.dataset_repo,
+            private=False,
+            snapshot_push_result=snapshot_push_result,
+        )
     except RolloutsError as error:
+        if created_session_name is not None:
+            delete_learn_session_by_name(session_name=created_session_name)
         error_console.print(f"[red]Error:[/red] {error}")
         raise typer.Exit(code=1) from error
 
@@ -199,6 +220,24 @@ def learn_start(
     output_console.print(f"session: {record.session_name}")
     output_console.print(f"dataset: {record.dataset_repo}")
     output_console.print(f"config path: {config}")
+    output_console.print("")
+    output_console.print("[green]Synced dataset[/green]")
+    batch_label = hf_result.batch_id if hf_result.batch_id is not None else "none"
+    output_console.print(f"repo: {hf_result.repo_id}")
+    output_console.print(f"pushed snapshots: {hf_result.pushed_snapshots}")
+    output_console.print(f"skipped snapshots: {hf_result.skipped_snapshots}")
+    output_console.print(f"created remotes: {hf_result.created_remotes}")
+    output_console.print(f"batch: {batch_label}")
+    output_console.print(f"added sessions: {hf_result.added_sessions}")
+    output_console.print(f"updated sessions: {hf_result.updated_sessions}")
+    output_console.print(f"total rows: {hf_result.total_rows}")
+    if remote_urls:
+        output_console.print("")
+        output_console.print("Archive remotes")
+        for remote_url in remote_urls:
+            output_console.print(f"[link={remote_url}]{remote_url}[/link]")
+        output_console.print("")
+    output_console.print(f"[link={hf_result.repo_url}]{hf_result.repo_url}[/link]")
 
 
 @learn_app.command("list")
@@ -349,7 +388,7 @@ def remote_defaults_set(
         help="Prefix to use when deriving auto-created archive repo names.",
     ),
     visibility: str = typer.Option(
-        "private",
+        "public",
         "--visibility",
         help="GitHub repo visibility for auto-created archive repos: private, public, or internal.",
     ),
@@ -357,19 +396,14 @@ def remote_defaults_set(
     """Set global defaults for auto-created GitHub archive repos."""
 
     try:
-        defaults = set_global_remote_defaults(
+        _configure_remote_defaults(
             owner=owner,
-            repo_prefix=prefix,
+            prefix=prefix,
             visibility=visibility,
         )
     except RolloutsError as error:
         error_console.print(f"[red]Error:[/red] {error}")
         raise typer.Exit(code=1) from error
-
-    output_console.print("[green]Configured remote defaults[/green]")
-    output_console.print(f"owner: {defaults.owner}")
-    output_console.print(f"prefix: {defaults.repo_prefix}")
-    output_console.print(f"visibility: {defaults.visibility}")
 
 
 @app.command()
@@ -749,6 +783,67 @@ def _prompt_setup_scope() -> str:
     if selected_scope == "2":
         return "project"
     raise RolloutsError("invalid setup selection; choose 1 for global or 2 for project")
+
+
+def _ensure_remote_defaults_configured_for_learn() -> RemoteDefaultsRecord:
+    paths = get_app_paths()
+    ensure_app_home(paths)
+    with connect(paths) as connection:
+        initialize_db(connection)
+        defaults = get_remote_defaults(connection)
+
+    if defaults is not None:
+        return defaults
+
+    output_console.print(
+        "GitHub archive defaults are required before learn can push workspace snapshots."
+    )
+    return _configure_remote_defaults(
+        owner=None,
+        prefix="rollouts-",
+        visibility="public",
+        prompt_for_missing=True,
+    )
+
+
+def _configure_remote_defaults(
+    *,
+    owner: str | None,
+    prefix: str,
+    visibility: str,
+    prompt_for_missing: bool = False,
+) -> RemoteDefaultsRecord:
+    resolved_owner = "" if owner is None else owner.strip()
+    resolved_prefix = prefix.strip()
+    resolved_visibility = visibility.strip()
+
+    if prompt_for_missing:
+        if not resolved_owner:
+            resolved_owner = typer.prompt("GitHub owner or organization").strip()
+        if not resolved_prefix:
+            resolved_prefix = typer.prompt(
+                "Archive repo prefix",
+                default="rollouts-",
+                show_default=True,
+            ).strip()
+        if not resolved_visibility:
+            resolved_visibility = typer.prompt(
+                "Archive repo visibility",
+                default="public",
+                show_default=True,
+            ).strip()
+
+    defaults = set_global_remote_defaults(
+        owner=resolved_owner,
+        repo_prefix=resolved_prefix,
+        visibility=resolved_visibility,
+    )
+    output_console.print("[green]Configured remote defaults[/green]")
+    output_console.print(f"owner: {defaults.owner}")
+    output_console.print(f"prefix: {defaults.repo_prefix}")
+    output_console.print(f"visibility: {defaults.visibility}")
+    output_console.print("")
+    return defaults
 
 
 def _get_cli_version() -> str:

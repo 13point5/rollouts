@@ -379,6 +379,15 @@ def list_learn_sessions(connection: sqlite3.Connection) -> list[LearnSessionReco
     return [_learn_session_from_row(row) for row in rows]
 
 
+def delete_learn_session(connection: sqlite3.Connection, *, session_name: str) -> int:
+    cursor = connection.execute(
+        "DELETE FROM learn_sessions WHERE session_name = ?",
+        (session_name,),
+    )
+    connection.commit()
+    return cursor.rowcount
+
+
 def save_learn_session(
     connection: sqlite3.Connection,
     *,

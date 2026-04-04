@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download
-from huggingface_hub.errors import HfHubHTTPError
+from huggingface_hub.errors import HfHubHTTPError, HFValidationError
+from huggingface_hub.utils import validate_repo_id
 
 from rollouts.commands.export import build_tracked_opencode_export_payloads
 from rollouts.commands.push import PushResult, push_snapshots
@@ -53,8 +54,7 @@ def push_opencode_exports_to_hf(
 
     token = os.environ.get("HF_TOKEN")
     api = HfApi()
-    auth_info = _require_hf_authentication(api=api, token=token)
-    repo_id = _resolve_dataset_repo_id(name=name, auth_info=auth_info)
+    repo_id = resolve_dataset_repo_id(name=name, api=api, token=token)
     export_payloads = build_tracked_opencode_export_payloads()
     if not export_payloads:
         raise RolloutsError("no tracked sessions found to export")
@@ -101,7 +101,7 @@ def push_opencode_exports_to_hf(
                 token=token,
                 commit_message="Update rollout dataset card",
             )
-    except HfHubHTTPError as error:
+    except (HFValidationError, HfHubHTTPError) as error:
         raise RolloutsError(str(error)) from error
 
     return HfPushResult(
@@ -115,6 +115,18 @@ def push_opencode_exports_to_hf(
         updated_sessions=updated_sessions,
         total_rows=len(merged_rows),
     )
+
+
+def resolve_dataset_repo_id(
+    *,
+    name: str,
+    api: HfApi | None = None,
+    token: str | None = None,
+) -> str:
+    resolved_api = api or HfApi()
+    resolved_token = token if token is not None else os.environ.get("HF_TOKEN")
+    auth_info = _require_hf_authentication(api=resolved_api, token=resolved_token)
+    return _resolve_dataset_repo_id(name=name, auth_info=auth_info)
 
 
 def _require_hf_authentication(*, api: HfApi, token: str | None) -> Mapping[str, object]:
@@ -133,10 +145,17 @@ def _resolve_dataset_repo_id(*, name: str, auth_info: Mapping[str, object]) -> s
     if not normalized_name:
         raise RolloutsError("dataset name cannot be empty")
     if "/" in normalized_name:
-        return normalized_name
+        repo_id = normalized_name
+    else:
+        username = str(auth_info["name"])
+        repo_id = f"{username}/{normalized_name}"
 
-    username = str(auth_info["name"])
-    return f"{username}/{normalized_name}"
+    try:
+        validate_repo_id(repo_id)
+    except HFValidationError as error:
+        raise RolloutsError(str(error)) from error
+
+    return repo_id
 
 
 def _load_existing_dataset(*, api: HfApi, repo_id: str, token: str | None) -> ExistingDataset:
