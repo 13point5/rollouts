@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS learn_runs (
   prime_checkpoint_id TEXT,
   prime_model_id TEXT,
   prime_config TEXT NOT NULL,
+  config_path TEXT,
+  restarted_from_run_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (session_id, run_number),
@@ -114,7 +116,18 @@ def connect(paths: AppPaths) -> sqlite3.Connection:
 
 def initialize_db(connection: sqlite3.Connection) -> None:
     connection.executescript(SCHEMA)
+    _migrate_db(connection)
     connection.commit()
+
+
+def _migrate_db(connection: sqlite3.Connection) -> None:
+    learn_run_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(learn_runs)").fetchall()
+    }
+    if "config_path" not in learn_run_columns:
+        connection.execute("ALTER TABLE learn_runs ADD COLUMN config_path TEXT")
+    if "restarted_from_run_id" not in learn_run_columns:
+        connection.execute("ALTER TABLE learn_runs ADD COLUMN restarted_from_run_id TEXT")
 
 
 def get_workspace_by_root_path(
@@ -454,6 +467,8 @@ def get_learn_run(
           prime_checkpoint_id,
           prime_model_id,
           prime_config,
+          config_path,
+          restarted_from_run_id,
           created_at,
           updated_at
         FROM learn_runs
@@ -482,6 +497,8 @@ def get_learn_run_by_prime_run_id(
           prime_checkpoint_id,
           prime_model_id,
           prime_config,
+          config_path,
+          restarted_from_run_id,
           created_at,
           updated_at
         FROM learn_runs
@@ -510,6 +527,8 @@ def list_learn_runs(
           prime_checkpoint_id,
           prime_model_id,
           prime_config,
+          config_path,
+          restarted_from_run_id,
           created_at,
           updated_at
         FROM learn_runs
@@ -536,6 +555,8 @@ def get_latest_learn_run(
           prime_checkpoint_id,
           prime_model_id,
           prime_config,
+          config_path,
+          restarted_from_run_id,
           created_at,
           updated_at
         FROM learn_runs
@@ -560,6 +581,8 @@ def save_learn_run(
     prime_checkpoint_id: str | None = None,
     prime_model_id: str | None = None,
     prime_config: str,
+    config_path: Path | None = None,
+    restarted_from_run_id: str | None = None,
 ) -> LearnRunRecord:
     existing = get_learn_run(connection, run_id=run_id)
     if existing is not None and existing.session_id != session_id:
@@ -571,6 +594,16 @@ def save_learn_run(
         existing.run_number
         if existing is not None
         else _get_next_learn_run_number(connection, session_id=session_id)
+    )
+    saved_config_path = (
+        config_path if config_path is not None else existing.config_path if existing else None
+    )
+    saved_restarted_from_run_id = (
+        restarted_from_run_id
+        if restarted_from_run_id is not None
+        else existing.restarted_from_run_id
+        if existing
+        else None
     )
     created_at = existing.created_at if existing is not None else utc_now()
     updated_at = utc_now()
@@ -585,15 +618,19 @@ def save_learn_run(
           prime_checkpoint_id,
           prime_model_id,
           prime_config,
+          config_path,
+          restarted_from_run_id,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           prime_run_id = excluded.prime_run_id,
           prime_checkpoint_id = excluded.prime_checkpoint_id,
           prime_model_id = excluded.prime_model_id,
           prime_config = excluded.prime_config,
+          config_path = excluded.config_path,
+          restarted_from_run_id = excluded.restarted_from_run_id,
           updated_at = excluded.updated_at
         """,
         (
@@ -604,6 +641,8 @@ def save_learn_run(
             prime_checkpoint_id,
             prime_model_id,
             prime_config,
+            str(saved_config_path) if saved_config_path is not None else None,
+            saved_restarted_from_run_id,
             created_at.isoformat(),
             updated_at.isoformat(),
         ),
@@ -966,6 +1005,8 @@ def _learn_run_from_row(row: sqlite3.Row) -> LearnRunRecord:
         prime_checkpoint_id=row["prime_checkpoint_id"],
         prime_model_id=row["prime_model_id"],
         prime_config=row["prime_config"],
+        config_path=Path(row["config_path"]) if row["config_path"] is not None else None,
+        restarted_from_run_id=row["restarted_from_run_id"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

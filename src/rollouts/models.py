@@ -74,5 +74,7 @@ class LearnRunRecord(BaseModel):
     prime_checkpoint_id: str | None = None
     prime_model_id: str | None = None
     prime_config: str
+    config_path: Path | None = None
+    restarted_from_run_id: str | None = None
     created_at: datetime
     updated_at: datetime

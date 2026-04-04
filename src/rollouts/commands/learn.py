@@ -207,7 +207,64 @@ def delete_learn_session_by_name(*, session_name: str) -> int:
         return db_delete_learn_session(connection, session_name=session_name)
 
 
-def create_initial_learn_run(*, session: LearnSessionRecord) -> LearnRunRecord:
+def read_learn_run_config_file(
+    *,
+    config_path: Path,
+    dataset_repo: str,
+) -> str:
+    try:
+        prime_config = config_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise RolloutsError(f"failed to read config file: {config_path}") from error
+
+    if not prime_config.strip():
+        raise RolloutsError("config file cannot be empty")
+
+    return add_dataset_to_prime_config(
+        prime_config=prime_config,
+        dataset_repo=dataset_repo,
+    )
+
+
+def resolve_learn_run_restart_inputs(
+    *,
+    session: LearnSessionRecord,
+    source_run: LearnRunRecord,
+    config_path: Path | None = None,
+) -> tuple[str, Path]:
+    if config_path is not None:
+        resolved_config_path = config_path.resolve(strict=False)
+        return (
+            read_learn_run_config_file(
+                config_path=resolved_config_path,
+                dataset_repo=session.dataset_repo,
+            ),
+            resolved_config_path,
+        )
+
+    if source_run.config_path is None:
+        raise RolloutsError(
+            "latest run does not have a stored config path; pass --config to restart it"
+        )
+
+    resolved_config_path = source_run.config_path.expanduser().resolve(strict=False)
+    if not resolved_config_path.exists():
+        raise RolloutsError(
+            f"stored config path no longer exists: {resolved_config_path}; pass --config to restart"
+        )
+    if not resolved_config_path.is_file():
+        raise RolloutsError(
+            f"stored config path is not a file: {resolved_config_path}; pass --config to restart"
+        )
+
+    return source_run.prime_config, resolved_config_path
+
+
+def create_initial_learn_run(
+    *,
+    session: LearnSessionRecord,
+    config_path: Path,
+) -> LearnRunRecord:
     paths = get_app_paths()
     ensure_app_home(paths)
     with connect(paths) as connection:
@@ -217,6 +274,30 @@ def create_initial_learn_run(*, session: LearnSessionRecord) -> LearnRunRecord:
             run_id=uuid4().hex,
             session_id=session.id,
             prime_config=session.prime_config,
+            config_path=config_path.resolve(strict=False),
+        )
+
+
+def create_restarted_learn_run(
+    *,
+    session: LearnSessionRecord,
+    source_run: LearnRunRecord,
+    prime_config: str,
+    config_path: Path,
+    prime_run_id: str,
+) -> LearnRunRecord:
+    paths = get_app_paths()
+    ensure_app_home(paths)
+    with connect(paths) as connection:
+        initialize_db(connection)
+        return save_learn_run(
+            connection,
+            run_id=uuid4().hex,
+            session_id=session.id,
+            prime_run_id=prime_run_id,
+            prime_config=prime_config,
+            config_path=config_path.resolve(strict=False),
+            restarted_from_run_id=source_run.id,
         )
 
 
@@ -237,4 +318,6 @@ def record_prime_run_id_for_learn_run(
             prime_checkpoint_id=run.prime_checkpoint_id,
             prime_model_id=run.prime_model_id,
             prime_config=run.prime_config,
+            config_path=run.config_path,
+            restarted_from_run_id=run.restarted_from_run_id,
         )

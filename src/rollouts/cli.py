@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+from rich.syntax import Syntax
 from rich.table import Table
 
 from rollouts.commands.delete import delete_data, validate_delete_args
@@ -16,10 +17,12 @@ from rollouts.commands.hf import push_opencode_exports_to_hf
 from rollouts.commands.learn import (
     create_initial_learn_run,
     create_learn_session,
+    create_restarted_learn_run,
     delete_learn_session_by_name,
     get_learn_session_status,
     list_learn_session_statuses,
     record_prime_run_id_for_learn_run,
+    resolve_learn_run_restart_inputs,
     suggest_dataset_repo_id,
 )
 from rollouts.commands.list import list_all_sessions, list_all_workspaces
@@ -218,7 +221,10 @@ def learn_start(
             private=False,
             snapshot_push_result=snapshot_push_result,
         )
-        initial_run = create_initial_learn_run(session=record)
+        initial_run = create_initial_learn_run(
+            session=record,
+            config_path=config,
+        )
         started_prime_run = start_prime_rl_run(
             prime_config=initial_run.prime_config,
             config_path=config,
@@ -352,6 +358,14 @@ def learn_status(
     prime_model_id = (
         latest_run.prime_model_id if latest_run is not None and latest_run.prime_model_id else "-"
     )
+    config_path = (
+        str(latest_run.config_path) if latest_run is not None and latest_run.config_path else "-"
+    )
+    restarted_from_run_id = (
+        latest_run.restarted_from_run_id
+        if latest_run is not None and latest_run.restarted_from_run_id
+        else "-"
+    )
     created_at = (
         latest_run.created_at if latest_run is not None else session_status.session.created_at
     )
@@ -374,6 +388,8 @@ def learn_status(
     output_console.print(f"Updated: {_format_datetime(updated_at)}")
     output_console.print(f"Prime checkpoint id: {prime_checkpoint_id}")
     output_console.print(f"Prime model id: {prime_model_id}")
+    output_console.print(f"Config path: {config_path}")
+    output_console.print(f"Restarted from run id: {restarted_from_run_id}")
     if prime_status is not None:
         output_console.print("")
         output_console.print("Dashboard:")
@@ -391,6 +407,118 @@ def learn_status(
     if prime_status is not None and prime_status.error_message:
         output_console.print("")
         output_console.print(f"Prime error: {prime_status.error_message}")
+
+
+@learn_app.command("restart")
+def learn_restart(
+    session_name: str = typer.Argument(..., help="Global learn session name."),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help=(
+            "Optional Prime config TOML override. Defaults to the latest run's stored config path."
+        ),
+    ),
+) -> None:
+    """Restart the latest failed or manually stopped learn run in the same session."""
+
+    try:
+        session_status = get_learn_session_status(session_name=session_name)
+        latest_run = session_status.latest_run
+        if latest_run is None:
+            raise RolloutsError(
+                f"learn session has no runs: {session_status.session.session_name!r}"
+            )
+        if latest_run.prime_run_id is None:
+            raise RolloutsError(
+                f"latest learn run #{latest_run.run_number} does not have a Prime run id recorded"
+            )
+
+        source_prime_status = get_prime_rl_run_status(run_id=latest_run.prime_run_id)
+        if not _is_restartable_prime_status(source_prime_status.status):
+            raise RolloutsError(
+                "latest learn run is not restartable; "
+                f"Prime status is {source_prime_status.status!r}"
+            )
+
+        restart_prime_config, restart_config_path = resolve_learn_run_restart_inputs(
+            session=session_status.session,
+            source_run=latest_run,
+            config_path=config,
+        )
+
+        output_console.print("[yellow]Restart confirmation[/yellow]")
+        output_console.print(f"session: {session_status.session.session_name}")
+        output_console.print(f"dataset: {session_status.session.dataset_repo}")
+        output_console.print(f"source run: #{latest_run.run_number}")
+        output_console.print(f"source run id: {latest_run.id}")
+        output_console.print(f"source Prime run id: {latest_run.prime_run_id}")
+        output_console.print(f"source Prime status: {source_prime_status.status}")
+        output_console.print(f"new run: #{latest_run.run_number + 1}")
+        output_console.print(f"config path: {restart_config_path}")
+        output_console.print("")
+        output_console.print(
+            Panel(
+                Syntax(restart_prime_config, "toml", word_wrap=True),
+                title="Prime config for restarted run",
+                border_style="cyan",
+                expand=False,
+            )
+        )
+        output_console.print("")
+        confirmed = typer.confirm("Start this restarted learn run?", default=False)
+        if not confirmed:
+            output_console.print("Cancelled.")
+            raise typer.Exit(code=1)
+
+        refreshed_status = get_learn_session_status(session_name=session_name)
+        refreshed_latest_run = refreshed_status.latest_run
+        if refreshed_latest_run is None or refreshed_latest_run.id != latest_run.id:
+            raise RolloutsError(
+                "latest learn run changed while waiting for confirmation; run restart again"
+            )
+        if refreshed_latest_run.prime_run_id is None:
+            raise RolloutsError(
+                f"latest learn run #{refreshed_latest_run.run_number} no longer has a Prime run id"
+            )
+
+        refreshed_prime_status = get_prime_rl_run_status(run_id=refreshed_latest_run.prime_run_id)
+        if not _is_restartable_prime_status(refreshed_prime_status.status):
+            raise RolloutsError(
+                "latest learn run is no longer restartable; "
+                f"Prime status is {refreshed_prime_status.status!r}"
+            )
+
+        started_prime_run = start_prime_rl_run(
+            prime_config=restart_prime_config,
+            config_path=restart_config_path,
+        )
+        restarted_run = create_restarted_learn_run(
+            session=refreshed_status.session,
+            source_run=refreshed_latest_run,
+            prime_config=restart_prime_config,
+            config_path=restart_config_path,
+            prime_run_id=started_prime_run.run_id,
+        )
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output_console.print("[green]Restarted learn run[/green]")
+    output_console.print(f"session: {session_status.session.session_name}")
+    output_console.print(f"source run: #{latest_run.run_number}")
+    output_console.print(f"new run: #{restarted_run.run_number}")
+    output_console.print(f"config path: {restart_config_path}")
+    output_console.print(f"prime run id: {restarted_run.prime_run_id}")
+    output_console.print("")
+    output_console.print(
+        f"[link={started_prime_run.dashboard_url}]{started_prime_run.dashboard_url}[/link]"
+    )
 
 
 @app.command("list")
@@ -982,6 +1110,16 @@ def _get_cli_version() -> str:
 
 def _format_datetime(value) -> str:
     return value.strftime("%Y-%m-%d %H:%M")
+
+
+def _is_restartable_prime_status(status: str) -> bool:
+    return status.strip().upper() in {
+        "FAILED",
+        "STOPPED",
+        "CANCELLED",
+        "CANCELED",
+        "ABORTED",
+    }
 
 
 def _push_snapshots_with_progress(
