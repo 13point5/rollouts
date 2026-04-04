@@ -23,7 +23,11 @@ from rollouts.commands.learn import (
     suggest_dataset_repo_id,
 )
 from rollouts.commands.list import list_all_sessions, list_all_workspaces
-from rollouts.commands.prime import get_prime_rl_run_status, start_prime_rl_run
+from rollouts.commands.prime import (
+    get_prime_rl_run_logs,
+    get_prime_rl_run_status,
+    start_prime_rl_run,
+)
 from rollouts.commands.push import (
     PushResult,
     get_push_scope_counts,
@@ -323,12 +327,19 @@ def learn_status(
 
     latest_run = session_status.latest_run
     prime_status = None
+    prime_log_lines: list[str] = []
+    prime_logs_error: str | None = None
     if latest_run is not None and latest_run.prime_run_id is not None:
         try:
             prime_status = get_prime_rl_run_status(run_id=latest_run.prime_run_id)
         except RolloutsError as error:
             error_console.print(f"[red]Error:[/red] {error}")
             raise typer.Exit(code=1) from error
+        if prime_status.error_message or prime_status.status == "FAILED":
+            try:
+                prime_log_lines = get_prime_rl_run_logs(run_id=latest_run.prime_run_id)
+            except RolloutsError as error:
+                prime_logs_error = str(error)
 
     prime_run_id = (
         latest_run.prime_run_id if latest_run is not None and latest_run.prime_run_id else "-"
@@ -363,14 +374,23 @@ def learn_status(
     output_console.print(f"Updated: {_format_datetime(updated_at)}")
     output_console.print(f"Prime checkpoint id: {prime_checkpoint_id}")
     output_console.print(f"Prime model id: {prime_model_id}")
-    if prime_status is not None and prime_status.error_message:
-        output_console.print(f"Prime error: {prime_status.error_message}")
     if prime_status is not None:
         output_console.print("")
         output_console.print("Dashboard:")
         output_console.print(
             f"[link={prime_status.dashboard_url}]{prime_status.dashboard_url}[/link]"
         )
+    if prime_log_lines or prime_logs_error:
+        output_console.print("")
+        output_console.print("Prime error details:")
+        if prime_log_lines:
+            for line in prime_log_lines:
+                output_console.print(line)
+        elif prime_logs_error is not None:
+            output_console.print(prime_logs_error)
+    if prime_status is not None and prime_status.error_message:
+        output_console.print("")
+        output_console.print(f"Prime error: {prime_status.error_message}")
 
 
 @app.command("list")

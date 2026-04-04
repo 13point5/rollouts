@@ -29,6 +29,26 @@ class PrimeRunStatusResult:
     dashboard_url: str
 
 
+def get_prime_rl_run_logs(*, run_id: str, tail_lines: int = 1000) -> list[str]:
+    try:
+        from prime_cli.api.rl import RLClient
+        from prime_cli.client import APIClient, APIError
+        from prime_cli.commands.rl import clean_logs
+    except ModuleNotFoundError as error:
+        raise RolloutsError(
+            "Prime SDK is not installed in the current Python environment"
+        ) from error
+
+    try:
+        api_client = APIClient()
+        rl_client = RLClient(api_client)
+        raw_logs = rl_client.get_logs(run_id, tail_lines=tail_lines)
+    except APIError as error:
+        raise RolloutsError(str(error)) from error
+
+    return clean_logs(raw_logs)
+
+
 def start_prime_rl_run(*, prime_config: str, config_path: Path) -> PrimeRunStartResult:
     try:
         from prime_cli.api.rl import RLClient
