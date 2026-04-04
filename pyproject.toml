@@ -10,6 +10,7 @@ authors = [
 ]
 dependencies = [
   "huggingface-hub>=0.34.4",
+  "prime>=0.5.57",
   "pydantic>=2.11.0",
   "rich>=14.0.0",
   "tomlkit>=0.14.0",

@@ -533,9 +533,9 @@ def get_latest_learn_run(
           session_id,
           run_number,
           prime_run_id,
-          checkpoint_id,
-          model_id,
-          config,
+          prime_checkpoint_id,
+          prime_model_id,
+          prime_config,
           created_at,
           updated_at
         FROM learn_runs

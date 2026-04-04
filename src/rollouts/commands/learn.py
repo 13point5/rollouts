@@ -3,18 +3,20 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
 from rollouts.commands.hf import resolve_dataset_repo_id as resolve_hf_dataset_repo_id
 from rollouts.errors import RolloutsError
-from rollouts.models import LearnSessionRecord
+from rollouts.models import LearnRunRecord, LearnSessionRecord
 from rollouts.paths import ensure_app_home, get_app_paths
 from rollouts.storage.db import (
     connect,
     get_learn_session,
     initialize_db,
+    save_learn_run,
     save_learn_session,
 )
 from rollouts.storage.db import (
@@ -152,3 +154,36 @@ def delete_learn_session_by_name(*, session_name: str) -> int:
     with connect(paths) as connection:
         initialize_db(connection)
         return db_delete_learn_session(connection, session_name=session_name)
+
+
+def create_initial_learn_run(*, session: LearnSessionRecord) -> LearnRunRecord:
+    paths = get_app_paths()
+    ensure_app_home(paths)
+    with connect(paths) as connection:
+        initialize_db(connection)
+        return save_learn_run(
+            connection,
+            run_id=uuid4().hex,
+            session_id=session.id,
+            prime_config=session.prime_config,
+        )
+
+
+def record_prime_run_id_for_learn_run(
+    *,
+    run: LearnRunRecord,
+    prime_run_id: str,
+) -> LearnRunRecord:
+    paths = get_app_paths()
+    ensure_app_home(paths)
+    with connect(paths) as connection:
+        initialize_db(connection)
+        return save_learn_run(
+            connection,
+            run_id=run.id,
+            session_id=run.session_id,
+            prime_run_id=prime_run_id,
+            prime_checkpoint_id=run.prime_checkpoint_id,
+            prime_model_id=run.prime_model_id,
+            prime_config=run.prime_config,
+        )

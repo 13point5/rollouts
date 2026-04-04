@@ -14,12 +14,15 @@ from rollouts.commands.delete import delete_data, validate_delete_args
 from rollouts.commands.export import export_opencode_session, export_opencode_sessions_jsonl
 from rollouts.commands.hf import push_opencode_exports_to_hf
 from rollouts.commands.learn import (
+    create_initial_learn_run,
     create_learn_session,
     delete_learn_session_by_name,
     list_all_learn_sessions,
+    record_prime_run_id_for_learn_run,
     suggest_dataset_repo_id,
 )
 from rollouts.commands.list import list_all_sessions, list_all_workspaces
+from rollouts.commands.prime import start_prime_rl_run
 from rollouts.commands.push import (
     PushResult,
     get_push_scope_counts,
@@ -210,6 +213,15 @@ def learn_start(
             private=False,
             snapshot_push_result=snapshot_push_result,
         )
+        initial_run = create_initial_learn_run(session=record)
+        started_prime_run = start_prime_rl_run(
+            prime_config=initial_run.prime_config,
+            config_path=config,
+        )
+        initial_run = record_prime_run_id_for_learn_run(
+            run=initial_run,
+            prime_run_id=started_prime_run.run_id,
+        )
     except RolloutsError as error:
         if created_session_name is not None:
             delete_learn_session_by_name(session_name=created_session_name)
@@ -220,6 +232,8 @@ def learn_start(
     output_console.print(f"session: {record.session_name}")
     output_console.print(f"dataset: {record.dataset_repo}")
     output_console.print(f"config path: {config}")
+    output_console.print(f"initial run: {initial_run.run_number}")
+    output_console.print(f"prime run id: {initial_run.prime_run_id}")
     output_console.print("")
     output_console.print("[green]Synced dataset[/green]")
     batch_label = hf_result.batch_id if hf_result.batch_id is not None else "none"
@@ -238,6 +252,10 @@ def learn_start(
             output_console.print(f"[link={remote_url}]{remote_url}[/link]")
         output_console.print("")
     output_console.print(f"[link={hf_result.repo_url}]{hf_result.repo_url}[/link]")
+    output_console.print("")
+    output_console.print(
+        f"[link={started_prime_run.dashboard_url}]{started_prime_run.dashboard_url}[/link]"
+    )
 
 
 @learn_app.command("list")
