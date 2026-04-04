@@ -17,12 +17,13 @@ from rollouts.commands.learn import (
     create_initial_learn_run,
     create_learn_session,
     delete_learn_session_by_name,
-    list_all_learn_sessions,
+    get_learn_session_status,
+    list_learn_session_statuses,
     record_prime_run_id_for_learn_run,
     suggest_dataset_repo_id,
 )
 from rollouts.commands.list import list_all_sessions, list_all_workspaces
-from rollouts.commands.prime import start_prime_rl_run
+from rollouts.commands.prime import get_prime_rl_run_status, start_prime_rl_run
 from rollouts.commands.push import (
     PushResult,
     get_push_scope_counts,
@@ -262,26 +263,114 @@ def learn_start(
 def learn_list() -> None:
     """List global learn sessions."""
 
-    sessions = list_all_learn_sessions()
-    if not sessions:
+    session_statuses = list_learn_session_statuses()
+    if not session_statuses:
         output_console.print("No learn sessions found.")
         return
 
     table = Table()
-    table.add_column(f"Session ({len(sessions)})", style="green", no_wrap=False)
+    table.add_column(f"Session ({len(session_statuses)})", style="green", no_wrap=False)
     table.add_column("Dataset", style="cyan", no_wrap=False)
-    table.add_column("Created", style="dim")
+    table.add_column("Runs", justify="right")
+    table.add_column("Latest", justify="right")
+    table.add_column("Prime Run ID (click to open)", style="magenta", no_wrap=False)
+    table.add_column("Status", style="yellow", no_wrap=False)
     table.add_column("Updated", style="dim")
 
-    for session in sessions:
+    for session_status in session_statuses:
+        latest_run = session_status.latest_run
+        prime_status = "-"
+        prime_run_id_cell = (
+            latest_run.prime_run_id if latest_run is not None and latest_run.prime_run_id else "-"
+        )
+        if latest_run is not None and latest_run.prime_run_id is not None:
+            try:
+                prime_run_status = get_prime_rl_run_status(run_id=latest_run.prime_run_id)
+                prime_status = prime_run_status.status
+                prime_run_id_cell = (
+                    f"[link={prime_run_status.dashboard_url}]{latest_run.prime_run_id}[/link]"
+                )
+            except RolloutsError:
+                prime_status = "ERROR"
+
+        updated_at = (
+            latest_run.updated_at if latest_run is not None else session_status.session.updated_at
+        )
         table.add_row(
-            session.session_name,
-            session.dataset_repo,
-            session.created_at.strftime("%Y-%m-%d %H:%M"),
-            session.updated_at.strftime("%Y-%m-%d %H:%M"),
+            session_status.session.session_name,
+            session_status.session.dataset_repo,
+            str(session_status.run_count),
+            f"#{latest_run.run_number}" if latest_run is not None else "-",
+            prime_run_id_cell,
+            prime_status,
+            _format_datetime(updated_at),
         )
 
     output_console.print(table)
+
+
+@learn_app.command("status")
+def learn_status(
+    session_name: str = typer.Argument(..., help="Global learn session name."),
+) -> None:
+    """Show detailed status for a global learn session."""
+
+    try:
+        session_status = get_learn_session_status(session_name=session_name)
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    latest_run = session_status.latest_run
+    prime_status = None
+    if latest_run is not None and latest_run.prime_run_id is not None:
+        try:
+            prime_status = get_prime_rl_run_status(run_id=latest_run.prime_run_id)
+        except RolloutsError as error:
+            error_console.print(f"[red]Error:[/red] {error}")
+            raise typer.Exit(code=1) from error
+
+    prime_run_id = (
+        latest_run.prime_run_id if latest_run is not None and latest_run.prime_run_id else "-"
+    )
+    prime_checkpoint_id = (
+        latest_run.prime_checkpoint_id
+        if latest_run is not None and latest_run.prime_checkpoint_id
+        else "-"
+    )
+    prime_model_id = (
+        latest_run.prime_model_id if latest_run is not None and latest_run.prime_model_id else "-"
+    )
+    created_at = (
+        latest_run.created_at if latest_run is not None else session_status.session.created_at
+    )
+    updated_at = (
+        latest_run.updated_at if latest_run is not None else session_status.session.updated_at
+    )
+
+    output_console.print(f"Session: {session_status.session.session_name}")
+    output_console.print(f"Dataset: {session_status.session.dataset_repo}")
+    output_console.print(f"Runs: {session_status.run_count}")
+    output_console.print("")
+    output_console.print(
+        f"Latest run: #{latest_run.run_number}" if latest_run is not None else "Latest run: -"
+    )
+    output_console.print(f"Prime run id: {prime_run_id}")
+    output_console.print(
+        f"Prime status: {prime_status.status if prime_status is not None else '-'}"
+    )
+    output_console.print(f"Created: {_format_datetime(created_at)}")
+    output_console.print(f"Updated: {_format_datetime(updated_at)}")
+    output_console.print(f"Prime checkpoint id: {prime_checkpoint_id}")
+    output_console.print(f"Prime model id: {prime_model_id}")
+    if prime_status is not None and prime_status.error_message:
+        output_console.print(f"Prime error: {prime_status.error_message}")
+    if prime_status is not None:
+        output_console.print("")
+        output_console.print("Dashboard:")
+        output_console.print(
+            f"[link={prime_status.dashboard_url}]{prime_status.dashboard_url}[/link]"
+        )
 
 
 @app.command("list")
@@ -869,6 +958,10 @@ def _get_cli_version() -> str:
         return package_version("agent-rollouts")
     except PackageNotFoundError:
         return "dev"
+
+
+def _format_datetime(value) -> str:
+    return value.strftime("%Y-%m-%d %H:%M")
 
 
 def _push_snapshots_with_progress(

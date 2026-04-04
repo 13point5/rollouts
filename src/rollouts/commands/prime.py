@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from prime_cli.api.rl import RLClient
-from prime_cli.client import APIClient, APIError
-from prime_cli.commands.rl import RLConfig
-from prime_cli.core import Config as PrimeConfig
-from prime_cli.utils.env_vars import EnvParseError, collect_env_vars
 from pydantic import ValidationError as PydanticValidationError
 
 from rollouts.errors import RolloutsError
@@ -20,7 +17,28 @@ class PrimeRunStartResult:
     dashboard_url: str
 
 
+@dataclass(frozen=True)
+class PrimeRunStatusResult:
+    run_id: str
+    status: str
+    error_message: str | None
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    dashboard_url: str
+
+
 def start_prime_rl_run(*, prime_config: str, config_path: Path) -> PrimeRunStartResult:
+    try:
+        from prime_cli.api.rl import RLClient
+        from prime_cli.client import APIClient, APIError
+        from prime_cli.core import Config as PrimeConfig
+    except ModuleNotFoundError as error:
+        raise RolloutsError(
+            "Prime SDK is not installed in the current Python environment"
+        ) from error
+
     config = _load_prime_config(prime_config=prime_config)
     secrets = _collect_prime_secrets(config=config, config_path=config_path)
     _validate_wandb_config(config=config, secrets=secrets)
@@ -68,11 +86,48 @@ def start_prime_rl_run(*, prime_config: str, config_path: Path) -> PrimeRunStart
 
     return PrimeRunStartResult(
         run_id=run.id,
-        dashboard_url=f"{prime_app_config.frontend_url}/dashboard/training/{run.id}",
+        dashboard_url=_dashboard_url(frontend_url=prime_app_config.frontend_url, run_id=run.id),
     )
 
 
-def _load_prime_config(*, prime_config: str) -> RLConfig:
+def get_prime_rl_run_status(*, run_id: str) -> PrimeRunStatusResult:
+    try:
+        from prime_cli.api.rl import RLClient
+        from prime_cli.client import APIClient, APIError
+        from prime_cli.core import Config as PrimeConfig
+    except ModuleNotFoundError as error:
+        raise RolloutsError(
+            "Prime SDK is not installed in the current Python environment"
+        ) from error
+
+    try:
+        api_client = APIClient()
+        rl_client = RLClient(api_client)
+        prime_app_config = PrimeConfig()
+        run = rl_client.get_run(run_id)
+    except APIError as error:
+        raise RolloutsError(str(error)) from error
+
+    return PrimeRunStatusResult(
+        run_id=run.id,
+        status=run.status,
+        error_message=run.error_message,
+        created_at=run.created_at,
+        updated_at=run.updated_at,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        dashboard_url=_dashboard_url(frontend_url=prime_app_config.frontend_url, run_id=run.id),
+    )
+
+
+def _load_prime_config(*, prime_config: str) -> Any:
+    try:
+        from prime_cli.commands.rl import RLConfig
+    except ModuleNotFoundError as error:
+        raise RolloutsError(
+            "Prime SDK is not installed in the current Python environment"
+        ) from error
+
     try:
         config_data = tomllib.loads(prime_config)
     except tomllib.TOMLDecodeError as error:
@@ -96,7 +151,14 @@ def _format_validation_errors(error: PydanticValidationError) -> list[str]:
     return messages
 
 
-def _collect_prime_secrets(*, config: RLConfig, config_path: Path) -> dict[str, str]:
+def _collect_prime_secrets(*, config: Any, config_path: Path) -> dict[str, str]:
+    try:
+        from prime_cli.utils.env_vars import EnvParseError, collect_env_vars
+    except ModuleNotFoundError as error:
+        raise RolloutsError(
+            "Prime SDK is not installed in the current Python environment"
+        ) from error
+
     config_dir = config_path.parent
     config_env_files = config.env_file + config.env_files
     resolved_env_files = [
@@ -111,9 +173,13 @@ def _collect_prime_secrets(*, config: RLConfig, config_path: Path) -> dict[str, 
         raise RolloutsError(str(error)) from error
 
 
-def _validate_wandb_config(*, config: RLConfig, secrets: dict[str, str]) -> None:
+def _validate_wandb_config(*, config: Any, secrets: dict[str, str]) -> None:
     wandb_configured = config.wandb.entity or config.wandb.project
     if wandb_configured and "WANDB_API_KEY" not in secrets:
         raise RolloutsError(
             "WANDB_API_KEY is required when W&B monitoring is configured in the Prime config"
         )
+
+
+def _dashboard_url(*, frontend_url: str, run_id: str) -> str:
+    return f"{frontend_url}/dashboard/training/{run_id}"

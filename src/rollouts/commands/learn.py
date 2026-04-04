@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -23,10 +24,20 @@ from rollouts.storage.db import (
     delete_learn_session as db_delete_learn_session,
 )
 from rollouts.storage.db import (
+    list_learn_runs as db_list_learn_runs,
+)
+from rollouts.storage.db import (
     list_learn_sessions as db_list_learn_sessions,
 )
 
 DEFAULT_DATASET_SUFFIX = "-rollouts-learn"
+
+
+@dataclass(frozen=True)
+class LearnSessionStatus:
+    session: LearnSessionRecord
+    run_count: int
+    latest_run: LearnRunRecord | None
 
 
 def suggest_dataset_repo_name(*, session_name: str) -> str:
@@ -146,6 +157,46 @@ def list_all_learn_sessions() -> list[LearnSessionRecord]:
     with connect(paths) as connection:
         initialize_db(connection)
         return db_list_learn_sessions(connection)
+
+
+def list_learn_session_statuses() -> list[LearnSessionStatus]:
+    paths = get_app_paths()
+    ensure_app_home(paths)
+    with connect(paths) as connection:
+        initialize_db(connection)
+        sessions = db_list_learn_sessions(connection)
+        return [
+            LearnSessionStatus(
+                session=session,
+                run_count=len(runs := db_list_learn_runs(connection, session_id=session.id)),
+                latest_run=runs[-1] if runs else None,
+            )
+            for session in sessions
+        ]
+
+
+def get_learn_session_status(*, session_name: str) -> LearnSessionStatus:
+    normalized_session_name = session_name.strip()
+    if not normalized_session_name:
+        raise RolloutsError("session name cannot be empty")
+
+    paths = get_app_paths()
+    ensure_app_home(paths)
+    with connect(paths) as connection:
+        initialize_db(connection)
+        session = get_learn_session(
+            connection,
+            session_name=normalized_session_name,
+        )
+        if session is None:
+            raise RolloutsError(f"learn session not found: {normalized_session_name!r}")
+
+        runs = db_list_learn_runs(connection, session_id=session.id)
+        return LearnSessionStatus(
+            session=session,
+            run_count=len(runs),
+            latest_run=runs[-1] if runs else None,
+        )
 
 
 def delete_learn_session_by_name(*, session_name: str) -> int:
