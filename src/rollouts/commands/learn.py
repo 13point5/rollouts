@@ -24,6 +24,9 @@ from rollouts.storage.db import (
     delete_learn_session as db_delete_learn_session,
 )
 from rollouts.storage.db import (
+    get_learn_run_by_number as db_get_learn_run_by_number,
+)
+from rollouts.storage.db import (
     list_learn_runs as db_list_learn_runs,
 )
 from rollouts.storage.db import (
@@ -199,6 +202,46 @@ def get_learn_session_status(*, session_name: str) -> LearnSessionStatus:
         )
 
 
+def get_learn_run_for_session(
+    *,
+    session_name: str,
+    run_number: int | None = None,
+) -> tuple[LearnSessionStatus, LearnRunRecord]:
+    normalized_session_name = session_name.strip()
+    if not normalized_session_name:
+        raise RolloutsError("session name cannot be empty")
+
+    paths = get_app_paths()
+    ensure_app_home(paths)
+    with connect(paths) as connection:
+        initialize_db(connection)
+        session = get_learn_session(
+            connection,
+            session_name=normalized_session_name,
+        )
+        if session is None:
+            raise RolloutsError(f"learn session not found: {normalized_session_name!r}")
+
+        runs = db_list_learn_runs(connection, session_id=session.id)
+        session_status = LearnSessionStatus(
+            session=session,
+            run_count=len(runs),
+            latest_run=runs[-1] if runs else None,
+        )
+
+        if run_number is None:
+            if session_status.latest_run is None:
+                raise RolloutsError(f"learn session has no runs: {session.session_name!r}")
+            return session_status, session_status.latest_run
+
+        run = db_get_learn_run_by_number(connection, session_id=session.id, run_number=run_number)
+        if run is None:
+            raise RolloutsError(
+                f"learn session {session.session_name!r} does not have run #{run_number}"
+            )
+        return session_status, run
+
+
 def delete_learn_session_by_name(*, session_name: str) -> int:
     paths = get_app_paths()
     ensure_app_home(paths)
@@ -226,38 +269,58 @@ def read_learn_run_config_file(
     )
 
 
-def resolve_learn_run_restart_inputs(
+def resolve_learn_run_config_inputs(
     *,
     session: LearnSessionRecord,
     source_run: LearnRunRecord,
     config_path: Path | None = None,
+    action_label: str = "continue",
 ) -> tuple[str, Path]:
     if config_path is not None:
         resolved_config_path = config_path.resolve(strict=False)
-        return (
-            read_learn_run_config_file(
-                config_path=resolved_config_path,
-                dataset_repo=session.dataset_repo,
-            ),
-            resolved_config_path,
+        resolved_prime_config = read_learn_run_config_file(
+            config_path=resolved_config_path,
+            dataset_repo=session.dataset_repo,
         )
+    else:
+        if source_run.config_path is None:
+            raise RolloutsError(
+                f"source run does not have a stored config path; pass --config to {action_label} it"
+            )
 
-    if source_run.config_path is None:
-        raise RolloutsError(
-            "latest run does not have a stored config path; pass --config to restart it"
-        )
+        resolved_config_path = source_run.config_path.expanduser().resolve(strict=False)
+        if not resolved_config_path.exists():
+            raise RolloutsError(
+                "stored config path no longer exists: "
+                f"{resolved_config_path}; pass --config to {action_label}"
+            )
+        if not resolved_config_path.is_file():
+            raise RolloutsError(
+                "stored config path is not a file: "
+                f"{resolved_config_path}; pass --config to {action_label}"
+            )
 
-    resolved_config_path = source_run.config_path.expanduser().resolve(strict=False)
-    if not resolved_config_path.exists():
-        raise RolloutsError(
-            f"stored config path no longer exists: {resolved_config_path}; pass --config to restart"
-        )
-    if not resolved_config_path.is_file():
-        raise RolloutsError(
-            f"stored config path is not a file: {resolved_config_path}; pass --config to restart"
-        )
+        resolved_prime_config = source_run.prime_config
 
-    return source_run.prime_config, resolved_config_path
+    return resolved_prime_config, resolved_config_path
+
+
+def set_prime_config_checkpoint(
+    *,
+    prime_config: str,
+    checkpoint_id: str | None,
+) -> str:
+    try:
+        document = tomlkit.parse(prime_config)
+    except TOMLKitError as error:
+        raise RolloutsError("config file is not valid TOML") from error
+
+    if checkpoint_id is None:
+        document.pop("checkpoint_id", None)
+    else:
+        document["checkpoint_id"] = checkpoint_id
+
+    return tomlkit.dumps(document)
 
 
 def create_initial_learn_run(
@@ -273,6 +336,7 @@ def create_initial_learn_run(
             connection,
             run_id=uuid4().hex,
             session_id=session.id,
+            type="start",
             prime_config=session.prime_config,
             config_path=config_path.resolve(strict=False),
         )
@@ -286,6 +350,46 @@ def create_restarted_learn_run(
     config_path: Path,
     prime_run_id: str,
 ) -> LearnRunRecord:
+    return _create_child_learn_run(
+        session=session,
+        source_run=source_run,
+        type="restart",
+        prime_config=prime_config,
+        config_path=config_path,
+        prime_run_id=prime_run_id,
+    )
+
+
+def create_continued_learn_run(
+    *,
+    session: LearnSessionRecord,
+    source_run: LearnRunRecord,
+    prime_config: str,
+    config_path: Path,
+    prime_run_id: str,
+    source_checkpoint_id: str | None,
+) -> LearnRunRecord:
+    return _create_child_learn_run(
+        session=session,
+        source_run=source_run,
+        type="continue",
+        prime_config=prime_config,
+        config_path=config_path,
+        prime_run_id=prime_run_id,
+        source_checkpoint_id=source_checkpoint_id,
+    )
+
+
+def _create_child_learn_run(
+    *,
+    session: LearnSessionRecord,
+    source_run: LearnRunRecord,
+    type: str,
+    prime_config: str,
+    config_path: Path,
+    prime_run_id: str,
+    source_checkpoint_id: str | None = None,
+) -> LearnRunRecord:
     paths = get_app_paths()
     ensure_app_home(paths)
     with connect(paths) as connection:
@@ -294,10 +398,12 @@ def create_restarted_learn_run(
             connection,
             run_id=uuid4().hex,
             session_id=session.id,
+            type=type,
             prime_run_id=prime_run_id,
+            source_checkpoint_id=source_checkpoint_id,
             prime_config=prime_config,
             config_path=config_path.resolve(strict=False),
-            restarted_from_run_id=source_run.id,
+            parent_run_id=source_run.id,
         )
 
 
@@ -314,10 +420,12 @@ def record_prime_run_id_for_learn_run(
             connection,
             run_id=run.id,
             session_id=run.session_id,
+            type=run.type,
             prime_run_id=prime_run_id,
+            source_checkpoint_id=run.source_checkpoint_id,
             prime_checkpoint_id=run.prime_checkpoint_id,
             prime_model_id=run.prime_model_id,
             prime_config=run.prime_config,
             config_path=run.config_path,
-            restarted_from_run_id=run.restarted_from_run_id,
+            parent_run_id=run.parent_run_id,
         )

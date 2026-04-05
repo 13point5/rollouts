@@ -29,6 +29,16 @@ class PrimeRunStatusResult:
     dashboard_url: str
 
 
+@dataclass(frozen=True)
+class PrimeRunCheckpointResult:
+    checkpoint_id: str
+    run_id: str
+    step: int
+    status: str
+    created_at: datetime
+    uploaded_at: datetime | None
+
+
 def get_prime_rl_run_logs(*, run_id: str, tail_lines: int = 1000) -> list[str]:
     try:
         from prime_cli.api.rl import RLClient
@@ -137,6 +147,50 @@ def get_prime_rl_run_status(*, run_id: str) -> PrimeRunStatusResult:
         started_at=run.started_at,
         completed_at=run.completed_at,
         dashboard_url=_dashboard_url(frontend_url=prime_app_config.frontend_url, run_id=run.id),
+    )
+
+
+def list_prime_rl_run_checkpoints(*, run_id: str) -> list[PrimeRunCheckpointResult]:
+    try:
+        from prime_cli.api.rl import RLClient
+        from prime_cli.client import APIClient, APIError
+    except ModuleNotFoundError as error:
+        raise RolloutsError(
+            "Prime SDK is not installed in the current Python environment"
+        ) from error
+
+    try:
+        api_client = APIClient()
+        rl_client = RLClient(api_client)
+        checkpoints = rl_client.list_checkpoints(run_id)
+    except APIError as error:
+        raise RolloutsError(str(error)) from error
+
+    return [
+        PrimeRunCheckpointResult(
+            checkpoint_id=checkpoint.id,
+            run_id=checkpoint.rft_run_id,
+            step=checkpoint.step,
+            status=checkpoint.status,
+            created_at=checkpoint.created_at,
+            uploaded_at=checkpoint.uploaded_at,
+        )
+        for checkpoint in checkpoints
+    ]
+
+
+def get_latest_prime_rl_run_checkpoint(*, run_id: str) -> PrimeRunCheckpointResult | None:
+    checkpoints = list_prime_rl_run_checkpoints(run_id=run_id)
+    uploaded_checkpoints = [checkpoint for checkpoint in checkpoints if checkpoint.uploaded_at]
+    if not uploaded_checkpoints:
+        return None
+
+    return max(
+        uploaded_checkpoints,
+        key=lambda checkpoint: (
+            checkpoint.step,
+            checkpoint.uploaded_at or checkpoint.created_at,
+        ),
     )
 
 

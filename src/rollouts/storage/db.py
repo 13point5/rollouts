@@ -87,12 +87,14 @@ CREATE TABLE IF NOT EXISTS learn_runs (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
   run_number INTEGER NOT NULL,
+  type TEXT NOT NULL DEFAULT 'start',
   prime_run_id TEXT,
+  source_checkpoint_id TEXT,
   prime_checkpoint_id TEXT,
   prime_model_id TEXT,
   prime_config TEXT NOT NULL,
   config_path TEXT,
-  restarted_from_run_id TEXT,
+  parent_run_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (session_id, run_number),
@@ -124,10 +126,127 @@ def _migrate_db(connection: sqlite3.Connection) -> None:
     learn_run_columns = {
         row["name"] for row in connection.execute("PRAGMA table_info(learn_runs)").fetchall()
     }
+    had_legacy_restart_column = "restarted_from_run_id" in learn_run_columns
+    if "type" not in learn_run_columns:
+        connection.execute("ALTER TABLE learn_runs ADD COLUMN type TEXT")
+    connection.execute(
+        """
+        UPDATE learn_runs
+        SET type = 'start'
+        WHERE type IS NULL OR type = ''
+        """
+    )
+    if "source_checkpoint_id" not in learn_run_columns:
+        connection.execute("ALTER TABLE learn_runs ADD COLUMN source_checkpoint_id TEXT")
     if "config_path" not in learn_run_columns:
         connection.execute("ALTER TABLE learn_runs ADD COLUMN config_path TEXT")
-    if "restarted_from_run_id" not in learn_run_columns:
-        connection.execute("ALTER TABLE learn_runs ADD COLUMN restarted_from_run_id TEXT")
+    if "parent_run_id" not in learn_run_columns and "restarted_from_run_id" in learn_run_columns:
+        connection.execute(
+            "ALTER TABLE learn_runs RENAME COLUMN restarted_from_run_id TO parent_run_id"
+        )
+    elif "parent_run_id" not in learn_run_columns:
+        connection.execute("ALTER TABLE learn_runs ADD COLUMN parent_run_id TEXT")
+
+    learn_run_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(learn_runs)").fetchall()
+    }
+    if "restarted_from_run_id" in learn_run_columns:
+        connection.execute(
+            """
+            UPDATE learn_runs
+            SET
+              parent_run_id = COALESCE(parent_run_id, restarted_from_run_id),
+              type = CASE
+                WHEN type IS NULL OR type = '' OR type = 'start' THEN 'restart'
+                ELSE type
+              END
+            WHERE restarted_from_run_id IS NOT NULL
+            """
+        )
+        _rebuild_learn_runs_without_restarted_from_run_id(connection)
+    elif had_legacy_restart_column:
+        connection.execute(
+            """
+            UPDATE learn_runs
+            SET type = 'restart'
+            WHERE parent_run_id IS NOT NULL
+              AND (type IS NULL OR type = '' OR type = 'start')
+            """
+        )
+
+
+def _rebuild_learn_runs_without_restarted_from_run_id(connection: sqlite3.Connection) -> None:
+    connection.execute("DROP INDEX IF EXISTS learn_runs_session_id_run_number_idx")
+    connection.execute("DROP INDEX IF EXISTS learn_runs_prime_run_id_idx")
+    connection.execute("ALTER TABLE learn_runs RENAME TO learn_runs_old")
+    connection.execute(
+        """
+        CREATE TABLE learn_runs (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          run_number INTEGER NOT NULL,
+          type TEXT NOT NULL DEFAULT 'start',
+          prime_run_id TEXT,
+          source_checkpoint_id TEXT,
+          prime_checkpoint_id TEXT,
+          prime_model_id TEXT,
+          prime_config TEXT NOT NULL,
+          config_path TEXT,
+          parent_run_id TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE (session_id, run_number),
+          FOREIGN KEY (session_id) REFERENCES learn_sessions(id) ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO learn_runs (
+          id,
+          session_id,
+          run_number,
+          type,
+          prime_run_id,
+          source_checkpoint_id,
+          prime_checkpoint_id,
+          prime_model_id,
+          prime_config,
+          config_path,
+          parent_run_id,
+          created_at,
+          updated_at
+        )
+        SELECT
+          id,
+          session_id,
+          run_number,
+          type,
+          prime_run_id,
+          source_checkpoint_id,
+          prime_checkpoint_id,
+          prime_model_id,
+          prime_config,
+          config_path,
+          parent_run_id,
+          created_at,
+          updated_at
+        FROM learn_runs_old
+        """
+    )
+    connection.execute("DROP TABLE learn_runs_old")
+    connection.execute(
+        """
+        CREATE INDEX learn_runs_session_id_run_number_idx
+        ON learn_runs (session_id, run_number)
+        """
+    )
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX learn_runs_prime_run_id_idx
+        ON learn_runs (prime_run_id)
+        """
+    )
 
 
 def get_workspace_by_root_path(
@@ -463,12 +582,14 @@ def get_learn_run(
           id,
           session_id,
           run_number,
+          type,
           prime_run_id,
+          source_checkpoint_id,
           prime_checkpoint_id,
           prime_model_id,
           prime_config,
           config_path,
-          restarted_from_run_id,
+          parent_run_id,
           created_at,
           updated_at
         FROM learn_runs
@@ -493,12 +614,14 @@ def get_learn_run_by_prime_run_id(
           id,
           session_id,
           run_number,
+          type,
           prime_run_id,
+          source_checkpoint_id,
           prime_checkpoint_id,
           prime_model_id,
           prime_config,
           config_path,
-          restarted_from_run_id,
+          parent_run_id,
           created_at,
           updated_at
         FROM learn_runs
@@ -523,12 +646,14 @@ def list_learn_runs(
           id,
           session_id,
           run_number,
+          type,
           prime_run_id,
+          source_checkpoint_id,
           prime_checkpoint_id,
           prime_model_id,
           prime_config,
           config_path,
-          restarted_from_run_id,
+          parent_run_id,
           created_at,
           updated_at
         FROM learn_runs
@@ -551,12 +676,14 @@ def get_latest_learn_run(
           id,
           session_id,
           run_number,
+          type,
           prime_run_id,
+          source_checkpoint_id,
           prime_checkpoint_id,
           prime_model_id,
           prime_config,
           config_path,
-          restarted_from_run_id,
+          parent_run_id,
           created_at,
           updated_at
         FROM learn_runs
@@ -572,17 +699,53 @@ def get_latest_learn_run(
     return _learn_run_from_row(row)
 
 
+def get_learn_run_by_number(
+    connection: sqlite3.Connection,
+    *,
+    session_id: str,
+    run_number: int,
+) -> LearnRunRecord | None:
+    row = connection.execute(
+        """
+        SELECT
+          id,
+          session_id,
+          run_number,
+          type,
+          prime_run_id,
+          source_checkpoint_id,
+          prime_checkpoint_id,
+          prime_model_id,
+          prime_config,
+          config_path,
+          parent_run_id,
+          created_at,
+          updated_at
+        FROM learn_runs
+        WHERE session_id = ?
+          AND run_number = ?
+        """,
+        (session_id, run_number),
+    ).fetchone()
+    if row is None:
+        return None
+
+    return _learn_run_from_row(row)
+
+
 def save_learn_run(
     connection: sqlite3.Connection,
     *,
     run_id: str,
     session_id: str,
+    type: str = "start",
     prime_run_id: str | None = None,
+    source_checkpoint_id: str | None = None,
     prime_checkpoint_id: str | None = None,
     prime_model_id: str | None = None,
     prime_config: str,
     config_path: Path | None = None,
-    restarted_from_run_id: str | None = None,
+    parent_run_id: str | None = None,
 ) -> LearnRunRecord:
     existing = get_learn_run(connection, run_id=run_id)
     if existing is not None and existing.session_id != session_id:
@@ -595,15 +758,19 @@ def save_learn_run(
         if existing is not None
         else _get_next_learn_run_number(connection, session_id=session_id)
     )
+    saved_type = existing.type if existing is not None else type
     saved_config_path = (
         config_path if config_path is not None else existing.config_path if existing else None
     )
-    saved_restarted_from_run_id = (
-        restarted_from_run_id
-        if restarted_from_run_id is not None
-        else existing.restarted_from_run_id
+    saved_source_checkpoint_id = (
+        source_checkpoint_id
+        if source_checkpoint_id is not None
+        else existing.source_checkpoint_id
         if existing
         else None
+    )
+    saved_parent_run_id = (
+        parent_run_id if parent_run_id is not None else existing.parent_run_id if existing else None
     )
     created_at = existing.created_at if existing is not None else utc_now()
     updated_at = utc_now()
@@ -614,35 +781,41 @@ def save_learn_run(
           id,
           session_id,
           run_number,
+          type,
           prime_run_id,
+          source_checkpoint_id,
           prime_checkpoint_id,
           prime_model_id,
           prime_config,
           config_path,
-          restarted_from_run_id,
+          parent_run_id,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
+          type = excluded.type,
           prime_run_id = excluded.prime_run_id,
+          source_checkpoint_id = excluded.source_checkpoint_id,
           prime_checkpoint_id = excluded.prime_checkpoint_id,
           prime_model_id = excluded.prime_model_id,
           prime_config = excluded.prime_config,
           config_path = excluded.config_path,
-          restarted_from_run_id = excluded.restarted_from_run_id,
+          parent_run_id = excluded.parent_run_id,
           updated_at = excluded.updated_at
         """,
         (
             run_id,
             session_id,
             run_number,
+            saved_type,
             prime_run_id,
+            saved_source_checkpoint_id,
             prime_checkpoint_id,
             prime_model_id,
             prime_config,
             str(saved_config_path) if saved_config_path is not None else None,
-            saved_restarted_from_run_id,
+            saved_parent_run_id,
             created_at.isoformat(),
             updated_at.isoformat(),
         ),
@@ -997,16 +1170,26 @@ def _learn_session_from_row(row: sqlite3.Row) -> LearnSessionRecord:
 
 
 def _learn_run_from_row(row: sqlite3.Row) -> LearnRunRecord:
+    row_keys = set(row.keys())
+    parent_run_id = row["parent_run_id"] if "parent_run_id" in row_keys else None
+    run_type = row["type"] if "type" in row_keys else None
+    if run_type not in {"start", "restart", "continue"}:
+        run_type = "start"
+
     return LearnRunRecord(
         id=row["id"],
         session_id=row["session_id"],
         run_number=row["run_number"],
+        type=run_type,
         prime_run_id=row["prime_run_id"],
+        source_checkpoint_id=(
+            row["source_checkpoint_id"] if "source_checkpoint_id" in row_keys else None
+        ),
         prime_checkpoint_id=row["prime_checkpoint_id"],
         prime_model_id=row["prime_model_id"],
         prime_config=row["prime_config"],
         config_path=Path(row["config_path"]) if row["config_path"] is not None else None,
-        restarted_from_run_id=row["restarted_from_run_id"],
+        parent_run_id=parent_run_id,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

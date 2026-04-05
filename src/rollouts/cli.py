@@ -16,18 +16,22 @@ from rollouts.commands.delete import delete_data, validate_delete_args
 from rollouts.commands.export import export_opencode_session, export_opencode_sessions_jsonl
 from rollouts.commands.hf import push_opencode_exports_to_hf
 from rollouts.commands.learn import (
+    create_continued_learn_run,
     create_initial_learn_run,
     create_learn_session,
     create_restarted_learn_run,
     delete_learn_session_by_name,
+    get_learn_run_for_session,
     get_learn_session_status,
     list_learn_session_statuses,
     record_prime_run_id_for_learn_run,
-    resolve_learn_run_restart_inputs,
+    resolve_learn_run_config_inputs,
+    set_prime_config_checkpoint,
     suggest_dataset_repo_id,
 )
 from rollouts.commands.list import list_all_sessions, list_all_workspaces
 from rollouts.commands.prime import (
+    get_latest_prime_rl_run_checkpoint,
     get_prime_rl_run_logs,
     get_prime_rl_run_status,
     start_prime_rl_run,
@@ -49,7 +53,7 @@ from rollouts.commands.setup import install_opencode_plugin, validate_setup_scop
 from rollouts.commands.snapshot import snapshot_workspace
 from rollouts.errors import RolloutsError
 from rollouts.github import get_github_repo_web_url
-from rollouts.models import RemoteDefaultsRecord, SnapshotRecord, WorkspaceRecord
+from rollouts.models import LearnRunRecord, RemoteDefaultsRecord, SnapshotRecord, WorkspaceRecord
 from rollouts.paths import ensure_app_home, get_app_paths
 from rollouts.storage.db import connect, get_remote_defaults, initialize_db
 
@@ -360,6 +364,12 @@ def learn_status(
     prime_run_id = (
         latest_run.prime_run_id if latest_run is not None and latest_run.prime_run_id else "-"
     )
+    run_type = latest_run.type if latest_run is not None else "-"
+    source_checkpoint_id = (
+        latest_run.source_checkpoint_id
+        if latest_run is not None and latest_run.source_checkpoint_id
+        else "-"
+    )
     prime_checkpoint_id = (
         latest_run.prime_checkpoint_id
         if latest_run is not None and latest_run.prime_checkpoint_id
@@ -371,10 +381,8 @@ def learn_status(
     config_path = (
         str(latest_run.config_path) if latest_run is not None and latest_run.config_path else "-"
     )
-    restarted_from_run_id = (
-        latest_run.restarted_from_run_id
-        if latest_run is not None and latest_run.restarted_from_run_id
-        else "-"
+    parent_run_id = (
+        latest_run.parent_run_id if latest_run is not None and latest_run.parent_run_id else "-"
     )
     created_at = (
         latest_run.created_at if latest_run is not None else session_status.session.created_at
@@ -390,16 +398,18 @@ def learn_status(
     output_console.print(
         f"Latest run: #{latest_run.run_number}" if latest_run is not None else "Latest run: -"
     )
+    output_console.print(f"Type: {run_type}")
     output_console.print(f"Prime run id: {prime_run_id}")
     output_console.print(
         f"Prime status: {prime_status.status if prime_status is not None else '-'}"
     )
     output_console.print(f"Created: {_format_datetime(created_at)}")
     output_console.print(f"Updated: {_format_datetime(updated_at)}")
+    output_console.print(f"Source checkpoint id: {source_checkpoint_id}")
     output_console.print(f"Prime checkpoint id: {prime_checkpoint_id}")
     output_console.print(f"Prime model id: {prime_model_id}")
     output_console.print(f"Config path: {config_path}")
-    output_console.print(f"Restarted from run id: {restarted_from_run_id}")
+    output_console.print(f"Parent run id: {parent_run_id}")
     if prime_status is not None:
         output_console.print("")
         output_console.print("Dashboard:")
@@ -430,6 +440,7 @@ def learn_restart(
         dir_okay=False,
         readable=True,
         resolve_path=True,
+        show_default="latest run config",
         help=(
             "Optional Prime config TOML override. Defaults to the latest run's stored config path."
         ),
@@ -456,10 +467,11 @@ def learn_restart(
                 f"Prime status is {source_prime_status.status!r}"
             )
 
-        restart_prime_config, restart_config_path = resolve_learn_run_restart_inputs(
+        restart_prime_config, restart_config_path = resolve_learn_run_config_inputs(
             session=session_status.session,
             source_run=latest_run,
             config_path=config,
+            action_label="restart",
         )
 
         output_console.print("[yellow]Restart confirmation[/yellow]")
@@ -525,6 +537,116 @@ def learn_restart(
     output_console.print(f"new run: #{restarted_run.run_number}")
     output_console.print(f"config path: {restart_config_path}")
     output_console.print(f"prime run id: {restarted_run.prime_run_id}")
+    output_console.print("")
+    output_console.print(
+        f"[link={started_prime_run.dashboard_url}]{started_prime_run.dashboard_url}[/link]"
+    )
+
+
+@learn_app.command("continue")
+def learn_continue(
+    session_name: str = typer.Argument(..., help="Global learn session name."),
+    from_run: str = typer.Option(
+        "latest",
+        "--from-run",
+        show_default="latest",
+        help="Source run number to continue from, or 'latest'.",
+    ),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        show_default="source run config",
+        help="Optional Prime config TOML override. Defaults to the source run's stored config.",
+    ),
+    checkpoint: str = typer.Option(
+        "latest",
+        "--checkpoint",
+        help="Checkpoint to warm-start from: latest, none, or an explicit checkpoint id.",
+    ),
+) -> None:
+    """Create a new learn run from a previous run, optionally warm-starting from a checkpoint."""
+
+    try:
+        selected_run_number = _parse_run_reference(from_run)
+        session_status, source_run = get_learn_run_for_session(
+            session_name=session_name,
+            run_number=selected_run_number,
+        )
+        continue_prime_config, continue_config_path = resolve_learn_run_config_inputs(
+            session=session_status.session,
+            source_run=source_run,
+            config_path=config,
+        )
+        source_checkpoint_id = _resolve_continue_checkpoint_id(
+            source_run=source_run,
+            checkpoint=checkpoint,
+        )
+        continue_prime_config = set_prime_config_checkpoint(
+            prime_config=continue_prime_config,
+            checkpoint_id=source_checkpoint_id,
+        )
+
+        output_console.print("[yellow]Continue confirmation[/yellow]")
+        output_console.print(f"session: {session_status.session.session_name}")
+        output_console.print(f"dataset: {session_status.session.dataset_repo}")
+        output_console.print(f"source run: #{source_run.run_number}")
+        output_console.print(f"source run id: {source_run.id}")
+        output_console.print(f"source Prime run id: {source_run.prime_run_id or '-'}")
+        output_console.print(f"source checkpoint id: {source_checkpoint_id or '-'}")
+        output_console.print(f"new run: #{session_status.run_count + 1}")
+        output_console.print(f"config path: {continue_config_path}")
+        output_console.print("")
+        output_console.print(
+            Panel(
+                Syntax(continue_prime_config, "toml", word_wrap=True),
+                title="Prime config for continued run",
+                border_style="cyan",
+                expand=False,
+            )
+        )
+        output_console.print("")
+        confirmed = typer.confirm("Start this continued learn run?", default=False)
+        if not confirmed:
+            output_console.print("Cancelled.")
+            raise typer.Exit(code=1)
+
+        refreshed_status, refreshed_source_run = get_learn_run_for_session(
+            session_name=session_name,
+            run_number=selected_run_number,
+        )
+        if selected_run_number is None and refreshed_source_run.id != source_run.id:
+            raise RolloutsError(
+                "latest learn run changed while waiting for confirmation; run continue again"
+            )
+
+        started_prime_run = start_prime_rl_run(
+            prime_config=continue_prime_config,
+            config_path=continue_config_path,
+        )
+        continued_run = create_continued_learn_run(
+            session=refreshed_status.session,
+            source_run=refreshed_source_run,
+            prime_config=continue_prime_config,
+            config_path=continue_config_path,
+            prime_run_id=started_prime_run.run_id,
+            source_checkpoint_id=source_checkpoint_id,
+        )
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output_console.print("[green]Created continued learn run[/green]")
+    output_console.print(f"session: {session_status.session.session_name}")
+    output_console.print(f"source run: #{source_run.run_number}")
+    output_console.print(f"new run: #{continued_run.run_number}")
+    output_console.print(f"checkpoint: {source_checkpoint_id or '-'}")
+    output_console.print(f"config path: {continue_config_path}")
+    output_console.print(f"prime run id: {continued_run.prime_run_id}")
     output_console.print("")
     output_console.print(
         f"[link={started_prime_run.dashboard_url}]{started_prime_run.dashboard_url}[/link]"
@@ -1180,6 +1302,43 @@ def _is_restartable_prime_status(status: str) -> bool:
         "CANCELED",
         "ABORTED",
     }
+
+
+def _parse_run_reference(value: str) -> int | None:
+    normalized_value = value.strip().lower()
+    if normalized_value == "latest":
+        return None
+
+    try:
+        run_number = int(normalized_value)
+    except ValueError as error:
+        raise RolloutsError(
+            f"invalid run reference {value!r}; use 'latest' or a positive integer"
+        ) from error
+
+    if run_number < 1:
+        raise RolloutsError(f"invalid run reference {value!r}; run number must be positive")
+    return run_number
+
+
+def _resolve_continue_checkpoint_id(
+    *,
+    source_run: LearnRunRecord,
+    checkpoint: str,
+) -> str | None:
+    normalized_checkpoint = checkpoint.strip()
+    if not normalized_checkpoint:
+        raise RolloutsError("checkpoint value cannot be empty")
+
+    checkpoint_selector = normalized_checkpoint.lower()
+    if checkpoint_selector in {"latest", "default"}:
+        if source_run.prime_run_id is None:
+            return None
+        latest_checkpoint = get_latest_prime_rl_run_checkpoint(run_id=source_run.prime_run_id)
+        return latest_checkpoint.checkpoint_id if latest_checkpoint is not None else None
+    if checkpoint_selector == "none":
+        return None
+    return normalized_checkpoint
 
 
 def _push_snapshots_with_progress(

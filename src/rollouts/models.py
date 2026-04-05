@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -70,11 +71,13 @@ class LearnRunRecord(BaseModel):
     id: str
     session_id: str
     run_number: int
+    type: Literal["start", "restart", "continue"] = "start"
     prime_run_id: str | None = None
+    source_checkpoint_id: str | None = None
     prime_checkpoint_id: str | None = None
     prime_model_id: str | None = None
     prime_config: str
     config_path: Path | None = None
-    restarted_from_run_id: str | None = None
+    parent_run_id: str | None = None
     created_at: datetime
     updated_at: datetime

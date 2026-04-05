@@ -15,15 +15,21 @@ rollouts setup
 # Start a learn session
 rollouts learn start my-session --config /path/to/rl.toml
 
-# Inspect learn sessions
-rollouts learn list
-rollouts learn status my-session
+# Continue from the latest run, reusing its config and the latest available checkpoint
+rollouts learn continue my-session
+
+# Continue from a specific run with a different config file
+rollouts learn continue my-session --from-run 2 --config /path/to/another-rl.toml
 
 # Restart the latest run in the same session if it failed or was stopped
 rollouts learn restart my-session
 
 # Or override the config path when restarting
 rollouts learn restart my-session --config /path/to/rl.toml
+
+# Inspect learn sessions
+rollouts learn list
+rollouts learn status my-session
 ```
 
 Make sure `prime`, `opencode`, `git`, `gh`, and `hf` are installed first.
@@ -54,9 +60,13 @@ uv tool upgrade agent-rollouts
 - `rollouts remote defaults set` is required before `rollouts learn start` because learn sessions push tracked snapshots and may auto-create GitHub repos.
 - `rollouts learn start <session> --config <path>` creates the learn session, stores the config, syncs the dataset, creates run `#1`, and starts the initial Prime run.
 - `rollouts learn list` shows your learn sessions.
-- `rollouts learn status <session>` shows the latest run, current Prime state, config path, and restart lineage.
+- `rollouts learn status <session>` shows the latest run, current Prime state, config path, and run lineage.
 - `rollouts learn restart <session>` restarts the latest failed or manually stopped run in the same session after confirmation.
 - `rollouts learn restart <session> --config <path>` overrides the stored config path for the restarted run.
+- `rollouts learn continue <session>` starts a new child run from a previous run, reusing the stored config and the latest available checkpoint by default.
+- `rollouts learn continue <session> --from-run <n>` continues from a specific run instead of the latest run.
+- `rollouts learn continue <session> --checkpoint none` starts the new run without setting `checkpoint_id`.
+- `rollouts learn continue <session> --checkpoint <id>` warm-starts from a specific Prime checkpoint id.
 
 If an older run was created before config-path tracking existed, `rollouts learn restart` may require `--config` the first time you retry it.
 
