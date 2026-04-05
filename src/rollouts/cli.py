@@ -82,8 +82,25 @@ output_console = Console()
 error_console = Console(stderr=True)
 
 
+def _version_option_callback(value: bool) -> None:
+    if not value:
+        return
+
+    output_console.print(_get_cli_version())
+    raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context) -> None:
+def main(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False,
+        "--version",
+        help="Show the current Rollouts version and exit.",
+        is_eager=True,
+        callback=_version_option_callback,
+    ),
+) -> None:
     """Rollouts command group."""
 
     if ctx.invoked_subcommand is not None:
