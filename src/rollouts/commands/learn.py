@@ -429,3 +429,27 @@ def record_prime_run_id_for_learn_run(
             config_path=run.config_path,
             parent_run_id=run.parent_run_id,
         )
+
+
+def record_prime_model_id_for_learn_run(
+    *,
+    run: LearnRunRecord,
+    prime_model_id: str,
+) -> LearnRunRecord:
+    paths = get_app_paths()
+    ensure_app_home(paths)
+    with connect(paths) as connection:
+        initialize_db(connection)
+        return save_learn_run(
+            connection,
+            run_id=run.id,
+            session_id=run.session_id,
+            type=run.type,
+            prime_run_id=run.prime_run_id,
+            source_checkpoint_id=run.source_checkpoint_id,
+            prime_checkpoint_id=run.prime_checkpoint_id,
+            prime_model_id=prime_model_id,
+            prime_config=run.prime_config,
+            config_path=run.config_path,
+            parent_run_id=run.parent_run_id,
+        )

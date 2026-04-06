@@ -8,8 +8,7 @@ A CLI for Continual Learning with your own coding agent sessions. Track rollouts
 # Install rollouts
 uv tool install agent-rollouts
 
-# Install the OpenCode Rollouts plugin.
-# If GitHub repo defaults are not configured yet, setup will prompt for them.
+# Install the OpenCode Rollouts plugin and configure GitHub repo defaults if not already set.
 rollouts setup
 
 # Start a learn session
@@ -20,6 +19,9 @@ rollouts learn continue my-session
 
 # Continue from a specific run with a different config file
 rollouts learn continue my-session --from-run 2 --config /path/to/another-rl.toml
+
+# Deploy the latest usable adapter for the latest run and use it in global OpenCode config
+rollouts learn use my-session
 
 # Restart the latest run in the same session if it failed or was stopped
 rollouts learn restart my-session
@@ -32,9 +34,7 @@ rollouts learn list
 rollouts learn status my-session
 ```
 
-Make sure `prime`, `opencode`, `git`, `gh`, and `hf` are installed first.
-
-If you plan to use `rollouts learn`, make sure your Prime environment is also configured.
+Make sure `prime`, `opencode`, `git`, `gh`, and `hf` are installed and configured first.
 
 ## Installation
 
@@ -54,19 +54,75 @@ uv tool upgrade agent-rollouts
 
 ## Usage
 
-### Learn Sessions
+### Core
 
-- `rollouts setup` installs the OpenCode Rollouts plugin and prompts for GitHub repo defaults if they are not configured yet.
-- `rollouts remote defaults set` is required before `rollouts learn start` because learn sessions push tracked snapshots and may auto-create GitHub repos.
-- `rollouts learn start <session> --config <path>` creates the learn session, stores the config, syncs the dataset, creates run `#1`, and starts the initial Prime run.
-- `rollouts learn list` shows your learn sessions.
-- `rollouts learn status <session>` shows the latest run, current Prime state, config path, and run lineage.
-- `rollouts learn restart <session>` restarts the latest failed or manually stopped run in the same session after confirmation.
-- `rollouts learn restart <session> --config <path>` overrides the stored config path for the restarted run.
-- `rollouts learn continue <session>` starts a new child run from a previous run, reusing the stored config and the latest available checkpoint by default.
-- `rollouts learn continue <session> --from-run <n>` continues from a specific run instead of the latest run.
-- `rollouts learn continue <session> --checkpoint none` starts the new run without setting `checkpoint_id`.
-- `rollouts learn continue <session> --checkpoint <id>` warm-starts from a specific Prime checkpoint id.
+```bash
+# Show the installed Rollouts version.
+rollouts --version
+
+# Install the OpenCode Rollouts plugin globally or for one project.
+rollouts setup [WORKSPACE] [--scope global|project]
+
+# Store a workspace snapshot for one external session message.
+rollouts snapshot [WORKSPACE] --session <session_id> --message <message_id> --metadata <json>
+
+# List tracked workspaces and sessions.
+rollouts list [WORKSPACE]
+
+# Restore a stored snapshot into a destination directory.
+rollouts restore [WORKSPACE] [--repo <github_repo_url>] --session <session_id> --message <message_id> --dest <path>
+
+# Push stored snapshots to configured GitHub repos.
+rollouts push [WORKSPACE] [--session <session_id>] [--message <message_id>] [--all] [--create-remote]
+
+# Export tracked agent sessions for downstream use.
+rollouts export --agent opencode [--session <session_id> | --all] --out <path>
+
+# Delete local Rollouts data.
+rollouts delete [WORKSPACE] [--session <session_id>] [--message <message_id>] [--all]
+```
+
+### Remote
+
+```bash
+# Set the GitHub remote for a tracked workspace.
+rollouts remote set [WORKSPACE] --url <github_repo_url>
+
+# Clear one workspace remote or all stored remotes.
+rollouts remote clear [WORKSPACE] [--all]
+
+# Set defaults for auto-created GitHub repos.
+rollouts remote defaults set [--owner <github_owner>] [--prefix <repo_prefix>] [--visibility private|public|internal]
+```
+
+### Hugging Face
+
+```bash
+# Sync tracked OpenCode exports to a Hugging Face dataset.
+rollouts hf push --agent opencode --name <dataset_name_or_repo_id> [--private|--public]
+```
+
+### Learn
+
+```bash
+# Start a new continual-learning session and initial Prime run.
+rollouts learn start <session_name> [--dataset <dataset_name|repo_id|url>] --config <path>
+
+# List all learn sessions.
+rollouts learn list
+
+# Show detailed status for one learn session.
+rollouts learn status <session_name>
+
+# Restart the latest failed or manually stopped run.
+rollouts learn restart <session_name> [--config <path>]
+
+# Continue from an earlier run, optionally from a checkpoint.
+rollouts learn continue <session_name> [--from-run <run_number|latest>] [--config <path>] [--checkpoint <latest|none|checkpoint_id>]
+
+# Deploy a run's adapter if needed and make OpenCode use it globally.
+rollouts learn use <session_name> [--run <run_number|latest>]
+```
 
 If an older run was created before config-path tracking existed, `rollouts learn restart` may require `--config` the first time you retry it.
 

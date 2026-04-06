@@ -30,6 +30,7 @@ from rollouts.commands.learn import (
     suggest_dataset_repo_id,
 )
 from rollouts.commands.list import list_all_sessions, list_all_workspaces
+from rollouts.commands.opencode import PRIME_INTELLECT_PROVIDER
 from rollouts.commands.prime import (
     get_latest_prime_rl_run_checkpoint,
     get_prime_rl_run_logs,
@@ -51,6 +52,7 @@ from rollouts.commands.remote import (
 from rollouts.commands.restore import restore_remote_workspace, restore_workspace
 from rollouts.commands.setup import install_opencode_plugin, validate_setup_scope
 from rollouts.commands.snapshot import snapshot_workspace
+from rollouts.commands.use import use_learn_run_in_opencode
 from rollouts.errors import RolloutsError
 from rollouts.github import get_github_repo_web_url
 from rollouts.models import LearnRunRecord, RemoteDefaultsRecord, SnapshotRecord, WorkspaceRecord
@@ -668,6 +670,41 @@ def learn_continue(
     output_console.print(
         f"[link={started_prime_run.dashboard_url}]{started_prime_run.dashboard_url}[/link]"
     )
+
+
+@learn_app.command("use")
+def learn_use(
+    session_name: str = typer.Argument(..., help="Global learn session name."),
+    run: str = typer.Option(
+        "latest",
+        "--run",
+        show_default="latest",
+        help="Run number to use in OpenCode, or 'latest'.",
+    ),
+) -> None:
+    """Deploy a learn run's adapter if needed and use it in global OpenCode config."""
+
+    try:
+        selected_run_number = _parse_run_reference(run)
+        result = use_learn_run_in_opencode(
+            session_name=session_name,
+            run_number=selected_run_number,
+        )
+    except RolloutsError as error:
+        error_console.print(f"[red]Error:[/red] {error}")
+        raise typer.Exit(code=1) from error
+
+    output_console.print("[green]Updated OpenCode model[/green]")
+    output_console.print(f"session: {result.session.session_name}")
+    output_console.print(f"run: #{result.run.run_number}")
+    output_console.print(f"prime run id: {result.run.prime_run_id}")
+    output_console.print(f"adapter id: {result.adapter.adapter_id}")
+    output_console.print(f"deployment status: {result.adapter.deployment_status}")
+    output_console.print(f"provider: {PRIME_INTELLECT_PROVIDER}")
+    output_console.print(f"model id: {result.model_id}")
+    output_console.print(f"selected model: {result.opencode.model_ref}")
+    output_console.print(f"config path: {result.opencode.config_path}")
+    output_console.print(f"added provider model: {'yes' if result.opencode.added_model else 'no'}")
 
 
 @app.command("list")

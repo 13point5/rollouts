@@ -4,6 +4,7 @@ import tomllib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 from pydantic import ValidationError as PydanticValidationError
@@ -37,6 +38,21 @@ class PrimeRunCheckpointResult:
     status: str
     created_at: datetime
     uploaded_at: datetime | None
+
+
+@dataclass(frozen=True)
+class PrimeAdapterResult:
+    adapter_id: str
+    display_name: str | None
+    run_id: str
+    base_model: str
+    step: int | None
+    status: str
+    deployment_status: str
+    deployed_at: datetime | None
+    deployment_error: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 def get_prime_rl_run_logs(*, run_id: str, tail_lines: int = 1000) -> list[str]:
@@ -194,6 +210,83 @@ def get_latest_prime_rl_run_checkpoint(*, run_id: str) -> PrimeRunCheckpointResu
     )
 
 
+def list_prime_run_adapters(*, run_id: str) -> list[PrimeAdapterResult]:
+    adapters = _list_prime_adapters()
+    return [adapter for adapter in adapters if adapter.run_id == run_id]
+
+
+def get_prime_adapter(*, adapter_id: str) -> PrimeAdapterResult:
+    try:
+        from prime_cli.api.deployments import DeploymentsClient
+        from prime_cli.client import APIClient, APIError
+    except ModuleNotFoundError as error:
+        raise RolloutsError(
+            "Prime SDK is not installed in the current Python environment"
+        ) from error
+
+    try:
+        api_client = APIClient()
+        deployments_client = DeploymentsClient(api_client)
+        adapter = deployments_client.get_adapter(adapter_id)
+    except APIError as error:
+        raise RolloutsError(str(error)) from error
+
+    return _adapter_result(adapter=adapter)
+
+
+def get_prime_inference_model_id(*, adapter: PrimeAdapterResult) -> str:
+    return f"{adapter.base_model}:{adapter.adapter_id}"
+
+
+def ensure_prime_run_adapter_deployed(
+    *,
+    run_id: str,
+    timeout_seconds: float = 900.0,
+    poll_interval_seconds: float = 5.0,
+) -> PrimeAdapterResult:
+    adapters = list_prime_run_adapters(run_id=run_id)
+    selected_adapter = _select_preferred_prime_adapter(run_id=run_id, adapters=adapters)
+    selected_adapter = _wait_for_prime_adapter_ready(
+        adapter=selected_adapter,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+
+    if selected_adapter.deployment_status == "DEPLOYED":
+        return selected_adapter
+    if selected_adapter.deployment_status == "DEPLOYING":
+        return _wait_for_prime_adapter_deployment(
+            adapter_id=selected_adapter.adapter_id,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+    if selected_adapter.deployment_status == "UNLOADING":
+        selected_adapter = _wait_for_prime_adapter_deployment_state(
+            adapter_id=selected_adapter.adapter_id,
+            terminal_states={"NOT_DEPLOYED", "UNLOAD_FAILED"},
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+
+    if selected_adapter.status != "READY":
+        raise RolloutsError(
+            f"Prime adapter is not ready for deployment; status is {selected_adapter.status!r}"
+        )
+
+    deployable_models = _get_prime_deployable_models()
+    if selected_adapter.base_model not in deployable_models:
+        raise RolloutsError(
+            f"Prime adapter base model is not currently deployable: {selected_adapter.base_model}"
+        )
+
+    _deploy_prime_adapter(adapter_id=selected_adapter.adapter_id)
+    return _wait_for_prime_adapter_deployment(
+        adapter_id=selected_adapter.adapter_id,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+
+
 def _load_prime_config(*, prime_config: str) -> Any:
     try:
         from prime_cli.commands.rl import RLConfig
@@ -257,3 +350,191 @@ def _validate_wandb_config(*, config: Any, secrets: dict[str, str]) -> None:
 
 def _dashboard_url(*, frontend_url: str, run_id: str) -> str:
     return f"{frontend_url}/dashboard/training/{run_id}"
+
+
+def _list_prime_adapters() -> list[PrimeAdapterResult]:
+    try:
+        from prime_cli.api.deployments import DeploymentsClient
+        from prime_cli.client import APIClient, APIError
+        from prime_cli.core import Config as PrimeConfig
+    except ModuleNotFoundError as error:
+        raise RolloutsError(
+            "Prime SDK is not installed in the current Python environment"
+        ) from error
+
+    try:
+        api_client = APIClient()
+        deployments_client = DeploymentsClient(api_client)
+        prime_app_config = PrimeConfig()
+        adapters: list[Any] = []
+        total = 0
+        offset = 0
+        page_size = 100
+
+        while offset == 0 or offset < total:
+            page_adapters, total = deployments_client.list_adapters(
+                team_id=prime_app_config.team_id,
+                limit=page_size,
+                offset=offset,
+            )
+            if not page_adapters:
+                break
+            adapters.extend(page_adapters)
+            offset += len(page_adapters)
+    except APIError as error:
+        raise RolloutsError(str(error)) from error
+
+    return [_adapter_result(adapter=adapter) for adapter in adapters]
+
+
+def _adapter_result(*, adapter: Any) -> PrimeAdapterResult:
+    return PrimeAdapterResult(
+        adapter_id=adapter.id,
+        display_name=adapter.display_name,
+        run_id=adapter.rft_run_id,
+        base_model=adapter.base_model,
+        step=adapter.step,
+        status=adapter.status,
+        deployment_status=adapter.deployment_status,
+        deployed_at=adapter.deployed_at,
+        deployment_error=adapter.deployment_error,
+        created_at=adapter.created_at,
+        updated_at=adapter.updated_at,
+    )
+
+
+def _select_preferred_prime_adapter(
+    *,
+    run_id: str,
+    adapters: list[PrimeAdapterResult],
+) -> PrimeAdapterResult:
+    if not adapters:
+        raise RolloutsError(f"Prime run {run_id!r} does not have any adapters yet")
+
+    non_failed_adapters = [adapter for adapter in adapters if adapter.status != "FAILED"]
+    if not non_failed_adapters:
+        raise RolloutsError(f"Prime run {run_id!r} only has failed adapters")
+
+    return max(non_failed_adapters, key=_prime_adapter_sort_key)
+
+
+def _prime_adapter_sort_key(adapter: PrimeAdapterResult) -> tuple[int, datetime, datetime]:
+    return (
+        adapter.step if adapter.step is not None else -1,
+        adapter.updated_at,
+        adapter.created_at,
+    )
+
+
+def _wait_for_prime_adapter_ready(
+    *,
+    adapter: PrimeAdapterResult,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> PrimeAdapterResult:
+    if adapter.status == "READY":
+        return adapter
+    if adapter.status not in {"PENDING", "UPLOADING"}:
+        return adapter
+
+    return _wait_for_prime_adapter_status(
+        adapter_id=adapter.adapter_id,
+        terminal_states={"READY", "FAILED"},
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+
+
+def _wait_for_prime_adapter_deployment(
+    *,
+    adapter_id: str,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> PrimeAdapterResult:
+    return _wait_for_prime_adapter_deployment_state(
+        adapter_id=adapter_id,
+        terminal_states={"DEPLOYED", "DEPLOY_FAILED"},
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+
+
+def _wait_for_prime_adapter_status(
+    *,
+    adapter_id: str,
+    terminal_states: set[str],
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> PrimeAdapterResult:
+    deadline = monotonic() + timeout_seconds
+    while True:
+        adapter = get_prime_adapter(adapter_id=adapter_id)
+        if adapter.status in terminal_states:
+            if adapter.status == "FAILED":
+                raise RolloutsError(f"Prime adapter failed: {adapter.adapter_id}")
+            return adapter
+        if monotonic() >= deadline:
+            raise RolloutsError(
+                "timed out waiting for Prime adapter status; "
+                f"adapter={adapter.adapter_id} status={adapter.status}"
+            )
+        sleep(poll_interval_seconds)
+
+
+def _wait_for_prime_adapter_deployment_state(
+    *,
+    adapter_id: str,
+    terminal_states: set[str],
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> PrimeAdapterResult:
+    deadline = monotonic() + timeout_seconds
+    while True:
+        adapter = get_prime_adapter(adapter_id=adapter_id)
+        if adapter.deployment_status in terminal_states:
+            if adapter.deployment_status == "DEPLOY_FAILED":
+                message = adapter.deployment_error or adapter.deployment_status
+                raise RolloutsError(f"Prime adapter deployment failed: {message}")
+            return adapter
+        if monotonic() >= deadline:
+            raise RolloutsError(
+                "timed out waiting for Prime adapter deployment; "
+                f"adapter={adapter.adapter_id} deployment_status={adapter.deployment_status}"
+            )
+        sleep(poll_interval_seconds)
+
+
+def _deploy_prime_adapter(*, adapter_id: str) -> PrimeAdapterResult:
+    try:
+        from prime_cli.api.deployments import DeploymentsClient
+        from prime_cli.client import APIClient, APIError
+    except ModuleNotFoundError as error:
+        raise RolloutsError(
+            "Prime SDK is not installed in the current Python environment"
+        ) from error
+
+    try:
+        api_client = APIClient()
+        deployments_client = DeploymentsClient(api_client)
+        adapter = deployments_client.deploy_adapter(adapter_id)
+    except APIError as error:
+        raise RolloutsError(str(error)) from error
+
+    return _adapter_result(adapter=adapter)
+
+
+def _get_prime_deployable_models() -> set[str]:
+    try:
+        from prime_cli.api.deployments import DeploymentsClient
+        from prime_cli.client import APIClient, APIError
+    except ModuleNotFoundError as error:
+        raise RolloutsError(
+            "Prime SDK is not installed in the current Python environment"
+        ) from error
+
+    try:
+        api_client = APIClient()
+        deployments_client = DeploymentsClient(api_client)
+        return set(deployments_client.get_deployable_models())
+    except APIError as error:
+        raise RolloutsError(str(error)) from error
